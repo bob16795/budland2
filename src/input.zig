@@ -71,7 +71,7 @@ const Keyboard = struct {
 
                 for (config.binds.items) |bind| {
                     if (bind.mod == modifier_mask and bind.keysym == sym) {
-                        config.apply(bind.operation) catch {};
+                        config.apply(bind.operation, self.input.session) catch {};
                         handled = true;
                     }
                 }
@@ -193,6 +193,10 @@ seat: *wlr.Seat,
 events: InputEvents,
 locked: bool = false,
 
+grab_client: *Client = undefined,
+grab_x: i32 = 0,
+grab_y: i32 = 0,
+
 pub fn init(self: *Input, session: *Session) !void {
     const wayland_data = session.wayland_data.?;
 
@@ -247,10 +251,7 @@ pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
 }
 
 pub fn cursor_motion(self: *Input, motion: *wlr.Pointer.event.Motion) !void {
-    _ = self;
-    _ = motion;
-
-    std.log.warn("TODO: cursor motion", .{});
+    try self.motionNotify(motion.time_msec, motion.device, motion.delta_x, motion.delta_y, motion.unaccel_dx, motion.unaccel_dy);
 }
 
 pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbsolute) !void {
@@ -309,21 +310,37 @@ pub fn motionNotify(
                 icon.surface.current.dx + cursor_x,
                 icon.surface.current.dy + cursor_y,
             );
-            // c.wlr_scene_node_set_position(@as(*c.wlr_scene_node, @ptrCast(@alignCast(icon.?.data))), @as(i32, @intFromFloat(cursor.x)) + icon.?.surface.*.sx, @as(i32, @intFromFloat(cursor.y)) + icon.?.surface.*.sy);
         }
     }
 
-    // TODO surface null
+    if (self.cursor_mode == .move) {
+        // if (!self.grab_client.isFullscreen())
+        try self.grab_client.resize(.{
+            .x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_x,
+            .y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_y,
+            .width = self.grab_client.bounds.?.width,
+            .height = self.grab_client.bounds.?.height,
+        }, true);
+
+        return;
+    } else if (self.cursor_mode == .resize) {
+        // if (!self.grab_client.isFullscreen())
+        try self.grab_client.resize(.{
+            .x = self.grab_client.bounds.?.x,
+            .y = self.grab_client.bounds.?.y,
+            .width = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.?.x,
+            .height = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.?.y,
+        }, true);
+
+        return;
+    }
+
     if (objects.surface == null and
         self.seat.drag == null and
         !std.mem.eql(u8, std.mem.span(self.xcursor_image), "left_ptr") and
         !std.mem.eql(u8, std.mem.span(self.xcursor_image), ""))
     {
         self.cursor.setXcursor(self.xcursor_manager, self.xcursor_image);
-        // self.xcursor_image = "left_ptr";
-        // const xcursor = self.xcursor_manager.getXcursor(self.xcursor_image, 1.0);
-        // self.xcursor_manager.load(xcursor, );
-        // c.wlr_xcursor_manager_set_cursor_image(cursor_mgr, cursor_image.?.ptr, cursor);
     }
 
     if (objects.client) |focusing|
@@ -362,6 +379,92 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                 if (target.managed)
                     try self.session.focus(objects.client, true);
             }
+
+            const keyboard = self.seat.getKeyboard();
+            const mods = if (keyboard) |keyb| keyb.getModifiers() else wlr.Keyboard.ModifierMask{};
+
+            for (self.session.config.mouse_binds.items) |b| {
+                if (b.button == button.button and b.mod == mods) {
+                    if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
+                        return;
+
+                    switch (b.action) {
+                        .move => {
+                            self.grab_client = objects.client orelse
+                                return;
+
+                            self.grab_client.floating = true;
+                            self.cursor_mode = .move;
+                            self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.?.x;
+                            self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.?.y;
+
+                            self.xcursor_image = "fleur";
+                            if (self.xcursor_manager.getXcursor(self.xcursor_image, 1)) |xcursor| {
+                                const xwayland = self.session.wayland_data.?.xwayland;
+
+                                xwayland.setCursor(
+                                    xcursor.images[0].buffer,
+                                    xcursor.images[0].width * 4,
+                                    xcursor.images[0].width,
+                                    xcursor.images[0].height,
+                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_x)),
+                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_y)),
+                                );
+                            }
+                        },
+                        .resize => {
+                            self.grab_client = objects.client orelse
+                                return;
+
+                            self.grab_client.floating = true;
+                            self.cursor_mode = .resize;
+
+                            _ = self.cursor.warp(
+                                null,
+                                @floatFromInt(self.grab_client.bounds.?.x + self.grab_client.bounds.?.width),
+                                @floatFromInt(self.grab_client.bounds.?.y + self.grab_client.bounds.?.height),
+                            );
+                            // c.wlr_cursor_warp_closest(cursor, null, @as(f64, @floatFromInt(grabc.?.geom.x + grabc.?.geom.width)), @as(f64, @floatFromInt(grabc.?.geom.y + grabc.?.geom.height)));
+
+                            self.xcursor_image = "bottom_right_corner";
+                            if (self.xcursor_manager.getXcursor(self.xcursor_image, 1)) |xcursor| {
+                                const xwayland = self.session.wayland_data.?.xwayland;
+
+                                xwayland.setCursor(
+                                    xcursor.images[0].buffer,
+                                    xcursor.images[0].width * 4,
+                                    xcursor.images[0].width,
+                                    xcursor.images[0].height,
+                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_x)),
+                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_y)),
+                                );
+                            }
+                        },
+                        // else => {
+                        //     std.log.warn("TODO: cursor action {}", .{b.action});
+                        // },
+                    }
+                    return;
+                }
+            }
+
+            std.log.info("Unhandled button {}", .{button.button});
+        },
+        .released => {
+            if (!self.locked and self.cursor_mode != .normal and self.cursor_mode != .pressed) {
+                self.cursor_mode = .normal;
+
+                self.seat.pointerClearFocus();
+                try self.motionNotify(0, null, 0, 0, 0, 0);
+
+                const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
+
+                if (objects.monitor) |monitor| {
+                    self.session.selmon = monitor;
+
+                    try self.grab_client.setMonitor(monitor, null);
+                }
+            } else self.cursor_mode = .normal;
         },
         else => {},
     }
@@ -370,10 +473,11 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
 }
 
 pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
-    _ = self;
-    _ = axis;
+    const wayland_data = self.session.wayland_data orelse unreachable;
 
-    std.log.warn("TODO: cursor axis", .{});
+    wayland_data.idle_notifier.notifyActivity(self.seat);
+
+    self.seat.pointerNotifyAxis(axis.time_msec, axis.orientation, axis.delta, axis.delta_discrete, axis.source, axis.relative_direction);
 }
 
 pub fn cursor_frame(self: *Input) !void {
@@ -401,9 +505,6 @@ const xkb_rules: xkb.RuleNames = .{
 pub fn keyrepeat(keyboard: *Keyboard) c_int {
     if (keyboard.keysyms.len != 0 and keyboard.keyboard.repeat_info.rate > 0) {
         keyboard.key_repeat_source.timerUpdate(@divTrunc(1000, keyboard.keyboard.repeat_info.rate)) catch return 0;
-
-        // for (keyboard.keysyms) |keysym|
-        //     _ = keybinding(kb.mods, keysym);
     }
 
     return 0;
@@ -440,7 +541,7 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
         .pointer => {
             // const wlr_pointer = device.toPointer();
             // if (device.isLibInput()) {}
-            std.log.warn("TODO: cursor lib input", .{});
+            // std.log.warn("TODO: cursor lib input", .{});
 
             self.cursor.attachInputDevice(device);
         },

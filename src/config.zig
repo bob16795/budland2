@@ -3,6 +3,9 @@ const wlr = @import("wlroots");
 const xkb = @import("xkbcommon");
 const wl = @import("wayland").server.wl;
 
+const Session = @import("session.zig");
+const Client = @import("client.zig");
+
 const Config = @This();
 
 pub const ConfigError = error{
@@ -81,12 +84,106 @@ const BindData = struct {
 
 const MouseBindData = struct {
     mod: wlr.Keyboard.ModifierMask,
-    button: i32,
+    button: u32,
     action: MouseAction,
+};
+
+const Container = struct {
+    name: []const u8,
+    id: u8,
+
+    x_min: f64,
+    y_min: f64,
+    x_max: f64,
+    y_max: f64,
+
+    children: []*const Container,
+
+    pub fn has(self: *const Container, idx: u32) bool {
+        if (self.id == idx)
+            return true;
+
+        for (self.children) |child| {
+            if (child.has(idx))
+                return true;
+        }
+
+        return false;
+    }
+
+    pub fn used(self: *const Container, usage: []bool) usize {
+        if (self.children.len == 0) return @intFromBool(usage[self.id]);
+
+        var result: usize = 0;
+        for (self.children) |child| {
+            result += child.used(usage);
+        }
+
+        return result;
+    }
+
+    pub fn getSize(self: *const Container, idx: u32, bounds: wlr.Box, usage: []bool) ?wlr.Box {
+        if (!self.has(idx))
+            return null;
+
+        if (self.used(usage) == 1) {
+            const screen_x: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_min);
+            const screen_y: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_min);
+            const screen_x_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_max);
+            const screen_y_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_max);
+            const screen_w = screen_x_max - screen_x;
+            const screen_h = screen_y_max - screen_y;
+
+            return .{
+                .x = screen_x + bounds.x,
+                .y = screen_y + bounds.y,
+                .width = screen_w,
+                .height = screen_h,
+            };
+        } else {
+            for (self.children) |child| {
+                if (child.getSize(idx, bounds, usage)) |result|
+                    return result;
+            }
+        }
+
+        return null;
+    }
+};
+
+const Layout = struct {
+    name: []const u8,
+    container: *const Container,
+
+    gaps_inner: i32,
+    gaps_outer: i32,
+
+    pub fn getSize(self: *const Layout, idx: u32, bounds: wlr.Box, usage: []bool) wlr.Box {
+        const new_bounds: wlr.Box = .{
+            .x = bounds.x + self.gaps_outer,
+            .y = bounds.y + self.gaps_outer,
+            .width = bounds.width - self.gaps_outer * 2,
+            .height = bounds.height - self.gaps_outer * 2,
+        };
+
+        const result = self.container.getSize(idx, new_bounds, usage) orelse new_bounds;
+
+        // std.log.info("resize, {}", .{result});
+
+        return .{
+            .x = result.x + self.gaps_inner,
+            .y = result.y + self.gaps_inner,
+            .width = result.width - self.gaps_inner * 2,
+            .height = result.height - self.gaps_inner * 2,
+        };
+    }
 };
 
 allocator: std.mem.Allocator,
 tags: std.ArrayList([]const u8),
+containers: std.ArrayList(Container),
+layouts: std.ArrayList(Layout),
+
 colors: [2][3][4]f32,
 monitor_rules: ConfigLookup(MonitorRule),
 auto_commands: std.EnumArray(AutoCondition, std.ArrayList(Operation)),
@@ -319,6 +416,26 @@ const Operation = union(OperationKind) {
                     .gaps_outer = create_layout.gaps_outer,
                 } };
             },
+            .create_tag => |create_tag| return .{ .create_tag = .{
+                .value = try create_tag.allocator.dupe(u8, create_tag.value),
+                .allocator = create_tag.allocator,
+            } },
+            .focus_tag => |create_tag| return .{ .focus_tag = .{
+                .value = try create_tag.allocator.dupe(u8, create_tag.value),
+                .allocator = create_tag.allocator,
+            } },
+            .send_tag => |create_tag| return .{ .send_tag = .{
+                .value = try create_tag.allocator.dupe(u8, create_tag.value),
+                .allocator = create_tag.allocator,
+            } },
+            .focus_container => |create_tag| return .{ .focus_container = .{
+                .value = try create_tag.allocator.dupe(u8, create_tag.value),
+                .allocator = create_tag.allocator,
+            } },
+            .send_container => |create_tag| return .{ .send_container = .{
+                .value = try create_tag.allocator.dupe(u8, create_tag.value),
+                .allocator = create_tag.allocator,
+            } },
             // .create_tag, .focus_tag, .send_tag, .focus_container, .send_container => |string_thing| {},
             else => return self.*,
         }
@@ -420,8 +537,6 @@ const Operation = union(OperationKind) {
             } };
         } else if (std.mem.eql(u8, first, "monitor")) {
             const name_text = split.next() orelse return error.BadOperationInput;
-            // const scale_text = split.next() orelse return error.BadOperationInput;
-            // const transform_text = split.next() orelse return error.BadOperationInput;
             const x_text = split.next() orelse return error.BadOperationInput;
             const y_text = split.next() orelse return error.BadOperationInput;
 
@@ -432,7 +547,6 @@ const Operation = union(OperationKind) {
             errdefer if (name) |name_value|
                 self.allocator.free(name_value);
 
-            // const scale = std.fmt.parseFloat(f32, x_text, 0) catch return error.BadOperationInput;
             const scale = 1.0;
             const transform: wl.Output.Transform = .normal;
 
@@ -479,10 +593,34 @@ const Operation = union(OperationKind) {
                 .command = cmd,
             } };
         } else if (std.mem.eql(u8, first, "mouse")) {
-            const button_text = split.next();
+            const button_text = split.next() orelse return error.BadOperationInput;
             const command_text = split.next() orelse return error.BadOperationInput;
 
-            _ = button_text;
+            var mod: wlr.Keyboard.ModifierMask = .{};
+            var button: u32 = 0;
+
+            var iter = std.mem.splitScalar(u8, button_text, '+');
+            while (iter.next()) |key| {
+                if (std.mem.eql(u8, key, "LOGO")) {
+                    if (@import("builtin").mode == .Debug)
+                        mod.alt = true
+                    else
+                        mod.logo = true;
+                } else if (std.mem.eql(u8, key, "SHIFT"))
+                    mod.shift = true
+                else if (std.mem.eql(u8, key, "CTRL"))
+                    mod.ctrl = true
+                else if (std.mem.eql(u8, key, "ALT"))
+                    mod.alt = true
+                else if (std.mem.eql(u8, key, "Left"))
+                    button = 272
+                else if (std.mem.eql(u8, key, "Right"))
+                    button = 273
+                else {
+                    std.log.info("{s}", .{button_text});
+                    return error.BadOperationInput;
+                }
+            }
 
             const command = try parseOption(MouseAction, command_text, &.{
                 .{ .input = "move", .value = .move },
@@ -490,8 +628,8 @@ const Operation = union(OperationKind) {
             });
 
             return .{ .mouse = .{
-                .mod = .{},
-                .button = 0,
+                .mod = mod,
+                .button = button,
                 .action = command,
             } };
         } else if (std.mem.eql(u8, first, "rule")) {
@@ -564,10 +702,12 @@ const Operation = union(OperationKind) {
 
             var iter = std.mem.splitScalar(u8, key_text, '+');
             while (iter.next()) |key| {
-                if (std.mem.eql(u8, key, "LOGO"))
-                    mod.alt = true
-                        // mod.logo = true
-                else if (std.mem.eql(u8, key, "SHIFT"))
+                if (std.mem.eql(u8, key, "LOGO")) {
+                    if (@import("builtin").mode == .Debug)
+                        mod.alt = true
+                    else
+                        mod.logo = true;
+                } else if (std.mem.eql(u8, key, "SHIFT"))
                     mod.shift = true
                 else if (std.mem.eql(u8, key, "CTRL"))
                     mod.ctrl = true
@@ -763,7 +903,15 @@ const Operation = union(OperationKind) {
     }
 };
 
-pub fn apply(self: *Config, operation: Operation) !void {
+pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
+    const active_client = if (session) |s|
+        if (s.selmon) |m|
+            m.focusedClient()
+        else
+            null
+    else
+        null;
+
     switch (operation) {
         .none => {},
         .monitor_rule => |monitor_rule| {
@@ -797,8 +945,124 @@ pub fn apply(self: *Config, operation: Operation) !void {
 
             try child.spawn();
         },
+        .mouse => |mouse| {
+            try self.mouse_binds.append(mouse);
+        },
+        .quit_client => {
+            if (active_client) |active|
+                active.close();
+        },
+        .create_tag => |create_tag| {
+            const tag = try self.allocator.dupe(u8, create_tag.value);
+            try self.tags.append(tag);
+        },
+        .focus_tag => |create_tag| {
+            if ((session orelse return).selmon) |monitor| {
+                std.log.info("focus {s}", .{create_tag.value});
+
+                for (self.tags.items, 0..) |tag, idx| {
+                    const vis = std.mem.eql(u8, tag, create_tag.value);
+
+                    std.log.info("focus {s} {}", .{ tag, vis });
+
+                    if (vis) {
+                        monitor.tag = idx;
+
+                        break;
+                    }
+                }
+
+                monitor.arrangeClients();
+            }
+        },
+        .send_tag => |create_tag| {
+            if (active_client) |active| {
+                for (self.tags.items, 0..) |tag, idx| {
+                    const vis = std.mem.eql(u8, tag, create_tag.value);
+
+                    if (vis) {
+                        std.log.info("send {*} {}", .{ active, idx });
+
+                        active.tag = idx;
+
+                        break;
+                    }
+                }
+
+                if ((session orelse return).selmon) |monitor| {
+                    monitor.arrangeClients();
+                }
+            }
+        },
+        .create_client_container => |client_container| {
+            try self.containers.append(.{
+                .name = try self.allocator.dupe(u8, client_container.name),
+                .id = @intCast(self.containers.items.len),
+
+                .x_min = client_container.left,
+                .y_min = client_container.top,
+                .x_max = client_container.right,
+                .y_max = client_container.bottom,
+
+                .children = &.{},
+            });
+        },
+        .create_multi_container => |multi_container| {
+            var a: ?*const Container = null;
+            var b: ?*const Container = null;
+
+            for (self.containers.items) |*item| {
+                if (std.mem.eql(u8, item.name, multi_container.child_a))
+                    a = item;
+                if (std.mem.eql(u8, item.name, multi_container.child_b))
+                    b = item;
+            }
+
+            if (a == null) return error.BadOperationInput;
+            if (b == null) return error.BadOperationInput;
+            if (a == b) return error.BadOperationInput;
+
+            try self.containers.append(.{
+                .name = try self.allocator.dupe(u8, multi_container.name),
+                .id = @intCast(self.containers.items.len),
+
+                .x_min = @min(a.?.x_min, b.?.x_min),
+                .y_min = @min(a.?.y_min, b.?.y_min),
+                .x_max = @min(a.?.x_max, b.?.x_max),
+                .y_max = @min(a.?.y_max, b.?.y_max),
+
+                .children = try self.allocator.dupe(*const Container, &.{ a.?, b.? }),
+            });
+        },
+        .create_layout => |create_layout| {
+            var container: ?*Container = null;
+
+            for (self.containers.items) |*item| {
+                if (std.mem.eql(u8, item.name, create_layout.root))
+                    container = item;
+            }
+
+            if (container == null) return error.BadOperationInput;
+
+            try self.layouts.append(.{
+                .name = try self.allocator.dupe(u8, create_layout.name),
+
+                .container = container.?,
+
+                .gaps_inner = @intCast(create_layout.gaps_inner),
+                .gaps_outer = @intCast(create_layout.gaps_outer),
+            });
+        },
+        .toggle_floating => {
+            if (active_client) |active| {
+                active.floating = !active.floating;
+
+                if (active.monitor) |monitor|
+                    monitor.arrangeClients();
+            }
+        },
         else => {
-            std.log.warn("TODO: apply setting {}", .{operation});
+            std.log.warn("TODO: apply setting {s}", .{@tagName(operation)});
 
             return error.Unimplemented;
         },
@@ -809,6 +1073,8 @@ pub fn init(allocator: std.mem.Allocator) Config {
     return .{
         .allocator = allocator,
         .tags = .init(allocator),
+        .containers = .init(allocator),
+        .layouts = .init(allocator),
         .colors = .{
             .{ .{ 1, 0, 0, 1 }, .{ 1, 0, 0, 1 }, .{ 1, 0, 0, 1 } },
             .{ .{ 1, 0, 0, 1 }, .{ 1, 0, 0, 1 }, .{ 1, 0, 0, 1 } },
@@ -832,6 +1098,16 @@ pub fn deinit(self: *Config) void {
     self.monitor_rules.deinit();
 }
 
+pub fn event(self: *Config, condition: AutoCondition) ConfigError!void {
+    for (self.auto_commands.get(condition).items) |operation| {
+        self.apply(operation, null) catch |err| {
+            if (err != error.Unimplemented)
+                return error.BadOperationInput;
+            // std.log.warn("TODO: config command {s} {!}", .{ line, err });
+        };
+    }
+}
+
 pub fn sourcePath(self: *Config, path: []const u8) ConfigError!void {
     const file = std.fs.openFileAbsolute(path, .{}) catch {
         std.log.err("failed to open config file {s}", .{path});
@@ -847,8 +1123,10 @@ pub fn sourcePath(self: *Config, path: []const u8) ConfigError!void {
 
         if (Operation.parse(self, line)) |operation| {
             defer operation.deinit();
-            self.apply(operation) catch |err| {
-                std.log.warn("TODO: config command {s} {!}", .{ line, err });
+            self.apply(operation, null) catch |err| {
+                if (err != error.Unimplemented)
+                    return error.BadOperationInput;
+                // std.log.warn("TODO: config command {s} {!}", .{ line, err });
             };
         } else |err| {
             std.log.warn("Can't parse config command {s} {!}", .{ line, err });

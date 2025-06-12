@@ -47,6 +47,7 @@ wayland_data: ?struct {
     output_layout: *wlr.OutputLayout,
     output_manager: *wlr.OutputManagerV1,
     layers: std.EnumArray(Layer, *wlr.SceneTree),
+    xdg_activation: *wlr.XdgActivationV1,
 
     idle_notifier: *wlr.IdleNotifierV1,
     idle_inhibit_manager: *wlr.IdleInhibitManagerV1,
@@ -63,6 +64,7 @@ input: Input = undefined,
 monitors: wl.list.Head(Monitor, .link) = undefined,
 clients: wl.list.Head(Client, .link) = undefined,
 focus_clients: wl.list.Head(Client, .focus_link) = undefined,
+exclusive_focus: ?*LayerSurface = null,
 
 selmon: ?*Monitor = null,
 
@@ -409,6 +411,8 @@ pub fn launch(self: *Session) SessionError!void {
     _ = try wlr.Presentation.create(wl_server, backend);
     _ = try wlr.GammaControlManagerV1.create(wl_server);
 
+    const xdg_activation = try wlr.XdgActivationV1.create(wl_server);
+
     const output_layout = try wlr.OutputLayout.create(wl_server);
     output_layout.events.change.add(&self.layout_change_event);
 
@@ -459,10 +463,11 @@ pub fn launch(self: *Session) SessionError!void {
         .idle_notifier = idle_notifier,
         .idle_inhibit_manager = idle_inhibit_manager,
         .layer_shell = layer_shell,
-        .xdg_shell = xdg_shell,
         .session_lock_manager = session_lock_manager,
-        .xdg_decoration_manager = xdg_decoration_manager,
         .compositor = compositor,
+        .xdg_shell = xdg_shell,
+        .xdg_decoration_manager = xdg_decoration_manager,
+        .xdg_activation = xdg_activation,
         .xwayland = xwayland,
     };
 
@@ -481,6 +486,9 @@ pub fn launch(self: *Session) SessionError!void {
 
     if (self.wayland_data) |data| {
         try data.backend.start();
+
+        try self.config.event(.startup);
+
         data.server.run();
     } else return error.SessionNotSetup;
 }
@@ -535,9 +543,8 @@ fn updateMons(self: *Session) !void {
             //     lock_surface.configure(monitor.mode.width, monitor.mode.height);
             // }
 
-            // TODO: arrange
-
-            monitor.arrange();
+            monitor.arrangeLayers();
+            monitor.arrangeClients();
 
             config_head.state.enabled = true;
             config_head.state.mode = monitor.output.current_mode;
@@ -551,7 +558,7 @@ fn updateMons(self: *Session) !void {
             var iter = self.clients.iterator(.forward);
             while (iter.next()) |client| {
                 if (client.monitor == null and client.isMapped()) {
-                    try client.setMonitor(selected, client.tags);
+                    try client.setMonitor(selected, null);
                 }
             }
         }
@@ -645,19 +652,24 @@ pub fn focus(self: *Session, target_client: ?*Client, lift: bool) !void {
         if (existing.getSurface() == old_focus)
             return;
 
-        // TODO: fstack
-        // TODO: color
+        existing.focus_link.remove();
+        self.focus_clients.prepend(existing);
+
+        self.selmon = existing.monitor;
+        // client_restack_surface(client.?);
+
+        //TODO: color
     }
 
     if (old_focus != null and (client == null or client.?.getSurface() != old_focus)) {
-        std.log.warn("TODO: focus client internal {*}", .{target_client});
+        // std.log.warn("TODO: focus client internal {*}", .{target_client});
     }
 
     if (client) |existing| {
         try self.input.motionNotify(0, null, 0, 0, 0, 0);
 
         existing.notifyEnter(input.seat, input.seat.getKeyboard());
-        // existing.notifyActivate(true);
+        existing.activateSurface(true);
     } else {
         self.input.seat.keyboardNotifyClearFocus();
     }

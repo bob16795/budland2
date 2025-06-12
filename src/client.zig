@@ -68,15 +68,17 @@ events: ClientEvents,
 scene: *wlr.SceneTree = undefined,
 scene_surface: *wlr.SceneTree = undefined,
 
-tags: std.DynamicBitSet,
+tag: usize = 0,
 bounds: ?wlr.Box = null,
+inner_bounds: ?wlr.Box = null,
 prev_bounds: ?wlr.Box = null,
 border: i32 = 0,
 monitor: ?*Monitor = null,
 managed: bool = false,
 frame: ?ClientFrame = null,
 fullscreen: bool = false,
-container: ?u8 = 0,
+container: u8 = 3,
+floating: bool = false,
 
 update_lock: std.Thread.Mutex = .{},
 
@@ -202,17 +204,13 @@ fn sharesTabs(self: *const Client, other: *Client) bool {
 pub fn updateTree(self: *Client, session: *Session) !void {
     if (self.isStopped()) return;
 
+    if (self.monitor) |monitor|
+        monitor.arrangeClients();
+
     self.update_lock.lock();
     defer self.update_lock.unlock();
 
-    var geom = self.bounds orelse return;
-    var child_geom = wlr.Box{
-        .x = 0,
-        .y = 0,
-        .width = geom.width,
-        .height = geom.height,
-    };
-
+    const geom = self.bounds orelse return;
     if (geom.width == 0 and geom.height == 0)
         return;
 
@@ -224,50 +222,6 @@ pub fn updateTree(self: *Client, session: *Session) !void {
             if (!self.sharesTabs(tabClient))
                 totalTabs += 1;
         }
-    }
-
-    if (self.frame) |frame| {
-        if (frame.hide_title) {
-            // left border
-            geom.width += self.border;
-            geom.x -= self.border;
-            child_geom.x += self.border;
-
-            // right border
-            geom.width += self.border;
-
-            // top border
-            geom.height += self.border;
-            geom.y -= self.border;
-            child_geom.y += self.border;
-
-            // bottom border
-            geom.y -= self.border;
-
-            std.log.warn("TODO: frame no title", .{});
-        } else {
-            // left border
-            geom.width += self.border;
-            geom.x -= self.border;
-            child_geom.x += self.border;
-
-            // right border
-            geom.width += self.border;
-
-            // top border
-            geom.height += self.border;
-            geom.y -= self.border;
-            child_geom.y += self.border;
-
-            // bottom border
-            geom.y -= self.border + TITLE_HEIGHT;
-
-            std.log.warn("TODO: frame title", .{});
-        }
-    } else {
-        // self.scene.node.setPosition(geom.x, geom.y);
-
-        std.log.warn("TODO: no frame", .{});
     }
 }
 
@@ -295,15 +249,12 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
 
                     surface.role_data.popup.?.unconstrainFromBox(&bounds);
 
-                    const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
-
                     self.* = .{
                         .surface = new_surface,
                         .scene_surface = scene_tree,
                         .session = session,
                         .managed = false,
                         .events = self.events,
-                        .tags = tags,
                     };
 
                     std.log.info("created popup", .{});
@@ -316,19 +267,12 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
             surface.surface.events.unmap.add(&self.events.xdg.unmap_event);
             surface.surface.events.destroy.add(&self.events.xdg.deinit_event);
 
-            // surface.events.request_activate.add(&self.events.x11.activate_event);
-            // surface.events.request_configure.add(&self.events.x11.configure_event);
-            // surface.events.request_resize.add(&self.events.x11.resize_event);
-
             if (surface.role == .none) {
-                const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
-
                 self.* = .{
                     .surface = new_surface,
                     .session = session,
-                    .managed = false,
+                    .managed = true,
                     .events = self.events,
-                    .tags = tags,
                 };
 
                 std.log.info("created managed client", .{});
@@ -342,15 +286,12 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
             // surface.role_data.toplevel.?.events.add(&self.events.xdg.resize_event);
             // surface.role_data.toplevel.?.events.configure.add(&self.events.xdg.configure_event);
 
-            const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
-
             self.* = .{
                 .surface = new_surface,
                 .session = session,
                 .border = 1,
                 .managed = true,
                 .events = self.events,
-                .tags = tags,
             };
 
             std.log.info("created client", .{});
@@ -378,15 +319,12 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
 
             surface.data = @intFromPtr(self);
 
-            const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
-
             self.* = .{
                 .surface = new_surface,
                 .session = session,
                 .border = 1,
                 .managed = !surface.override_redirect,
                 .events = self.events,
-                .tags = tags,
             };
 
             std.log.info("created x11 client", .{});
@@ -398,7 +336,6 @@ pub fn map(self: *Client) !void {
     std.log.info("map client {*}", .{self});
 
     var scene = try self.session.wayland_data.?.layers.get(.LyrTile).createSceneTree();
-    // scene.node.setEnabled(self.surface != .XDG);
 
     var scene_surface = switch (self.surface) {
         .XDG => |surface| try scene.createSceneXdgSurface(surface),
@@ -421,6 +358,22 @@ pub fn map(self: *Client) !void {
         }
     }
 
+    switch (self.surface) {
+        .XDG => |xdg| {
+            var geom: wlr.Box = undefined;
+            xdg.getGeometry(&geom);
+            self.bounds = geom;
+        },
+        .X11 => |xsurface| {
+            self.bounds = .{
+                .x = xsurface.x,
+                .y = xsurface.y,
+                .width = xsurface.width,
+                .height = xsurface.height,
+            };
+        },
+    }
+
     std.log.info("map client {*} surf {}", .{ self, self.surface });
 
     scene.node.data = @intFromPtr(self);
@@ -432,24 +385,19 @@ pub fn map(self: *Client) !void {
     switch (self.surface) {
         .X11 => {
             if (self.managed) {
-                self.bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
                 const bounds = self.bounds.?;
 
                 self.scene.node.reparent(self.session.wayland_data.?.layers.get(.LyrFloat));
                 self.scene.node.setPosition(bounds.x + self.border, bounds.y + self.border);
             } else {
-                self.bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
                 const bounds = self.bounds.?;
 
                 // TODO: apply rules
                 self.scene.node.reparent(self.session.wayland_data.?.layers.get(.LyrFloat));
                 self.scene.node.setPosition(bounds.x + self.border, bounds.y + self.border);
-                // .c.wlr_scene_node_reparent(&client.scene.node, layers.get(.LyrFloat));
-                // c.wlr_scene_node_set_position(&client.scene.node, client.geom.x + borderpx, client.geom.y + borderpx);
             }
         },
         .XDG => {
-            self.bounds = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
             const bounds = self.bounds.?;
 
             self.scene.node.reparent(self.session.wayland_data.?.layers.get(.LyrTile));
@@ -462,82 +410,183 @@ pub fn map(self: *Client) !void {
     try self.updateTree(self.session);
 }
 
-pub fn resize(self: *Client, target_bounds: ?wlr.Box, force: bool) !void {
-    _ = force;
-    if (target_bounds) |bnds|
-        self.bounds = bnds;
+pub fn resize(self: *Client, in_target_bounds: ?wlr.Box, force: bool) !void {
+    var target_bounds = in_target_bounds;
 
-    const bounds = self.bounds orelse return;
+    if (target_bounds) |*target| {
+        if (target.width <= 0)
+            target.width = if (self.bounds) |b| b.width else 20;
+        if (target.height <= 0)
+            target.height = if (self.bounds) |b| b.height else 20;
+    }
 
-    // std.log.info("resize bnds: {?}", .{bounds});
+    var title_height: i32 = 0;
+    var inner_bounds: wlr.Box = undefined;
+    if (!force) {
+        switch (self.surface) {
+            .XDG => |xdg| {
+                xdg.getGeometry(&inner_bounds);
+            },
+            .X11 => |xsurface| {
+                inner_bounds = .{
+                    .x = xsurface.x,
+                    .y = xsurface.y,
+                    .width = xsurface.width,
+                    .height = xsurface.height,
+                };
+            },
+        }
+    } else {
+        inner_bounds = target_bounds.?;
+    }
 
-    const view_bounds: wlr.Box = if (self.frame) |frame| get_box: {
-        const title_height = if (frame.hide_title) self.border else self.border + TITLE_HEIGHT;
+    const defaultxy = std.mem.zeroes(wlr.Box);
+
+    const bounds: wlr.Box = if (force) get_box: {
+        if (self.frame) |frame| {
+            title_height = if (frame.hide_title) self.border else self.border + TITLE_HEIGHT;
+
+            inner_bounds = .{
+                .x = self.border,
+                .y = self.border,
+                .width = target_bounds.?.width - self.border - self.border,
+                .height = target_bounds.?.height - self.border - title_height,
+            };
+        } else {
+            inner_bounds = .{
+                .x = 0,
+                .y = 0,
+                .width = target_bounds.?.width,
+                .height = target_bounds.?.height,
+            };
+        }
+
+        break :get_box target_bounds.?;
+    } else if (self.frame) |frame| get_box: {
+        title_height = if (frame.hide_title) self.border else self.border + TITLE_HEIGHT;
+
+        inner_bounds.x = self.border;
+        inner_bounds.y = title_height;
 
         break :get_box .{
-            .x = self.border,
-            .y = self.border + title_height,
-            .width = bounds.width - (self.border + self.border),
-            .height = bounds.height - (self.border + title_height),
+            .x = (self.bounds orelse defaultxy).x,
+            .y = (self.bounds orelse defaultxy).y,
+            .width = inner_bounds.width + (self.border + self.border),
+            .height = inner_bounds.height + (self.border + title_height),
         };
-    } else .{
-        .x = bounds.x,
-        .y = bounds.y,
-        .width = bounds.width,
-        .height = bounds.height,
+    } else get_box: {
+        inner_bounds.x = 0;
+        inner_bounds.y = 0;
+
+        break :get_box .{
+            .x = (self.bounds orelse defaultxy).x,
+            .y = (self.bounds orelse defaultxy).y,
+            .width = inner_bounds.width,
+            .height = inner_bounds.height,
+        };
     };
 
-    if (view_bounds.width == 0 or view_bounds.height == 0)
+    if (inner_bounds.width == 0 or inner_bounds.height == 0)
         return;
+
+    self.bounds = bounds;
+    self.inner_bounds = inner_bounds;
 
     //TODO: frame?
 
-    switch (self.surface) {
-        .X11 => |surface| {
-            surface.configure(
-                @intCast(view_bounds.x),
-                @intCast(view_bounds.y),
-                @intCast(view_bounds.width),
-                @intCast(view_bounds.height),
-            );
-            self.resize_serial = 0;
-        },
-        .XDG => |surface| {
-            self.resize_serial = surface.role_data.toplevel.?.setSize(@intCast(view_bounds.width), view_bounds.height);
-        },
+    self.scene.node.setPosition(self.bounds.?.x, self.bounds.?.y);
+    self.scene_surface.node.setPosition(self.inner_bounds.?.x, self.inner_bounds.?.y);
+
+    if (self.frame) |frame| {
+        frame.sides[0].setSize(self.inner_bounds.?.width, self.border + title_height);
+        frame.sides[1].setSize(self.inner_bounds.?.width, self.border);
+        frame.sides[2].setSize(self.border, self.inner_bounds.?.height);
+        frame.sides[3].setSize(self.border, self.inner_bounds.?.height);
+
+        frame.sides[0].node.setPosition(0, 0);
+        frame.sides[1].node.setPosition(0, self.inner_bounds.?.height);
+        frame.sides[2].node.setPosition(0, 0);
+        frame.sides[3].node.setPosition(self.inner_bounds.?.width, self.border);
     }
+
+    self.resize_serial = self.updateSize();
+}
+
+pub fn updateSize(self: *Client) u32 {
+    if (self.surface == .X11) {
+        self.surface.X11.configure(
+            @intCast(self.inner_bounds.?.x),
+            @intCast(self.inner_bounds.?.y),
+            @intCast(self.inner_bounds.?.width),
+            @intCast(self.inner_bounds.?.height),
+        );
+
+        return 0;
+    }
+
+    if (self.inner_bounds.?.width == self.surface.XDG.role_data.toplevel.?.current.width and
+        self.inner_bounds.?.height == self.surface.XDG.role_data.toplevel.?.current.height)
+        return 0;
+
+    return self.surface.XDG.role_data.toplevel.?.setSize(@intCast(self.inner_bounds.?.width), self.inner_bounds.?.height);
 }
 
 pub fn commit(self: *Client) !void {
-    // TODO: check mon
-
+    var geom: wlr.Box = undefined;
     switch (self.surface) {
-        .XDG => |surface| {
-            try self.resize(self.bounds, true);
-
-            if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
-                self.resize_serial = 0;
+        .XDG => |xdg| {
+            xdg.getGeometry(&geom);
         },
-        .X11 => |surface| {
-            try self.resize(self.bounds, true);
-
-            if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
-                self.resize_serial = 0;
+        .X11 => |xsurface| {
+            geom = .{
+                .x = xsurface.x,
+                .y = xsurface.y,
+                .width = xsurface.height,
+                .height = xsurface.width,
+            };
         },
+    }
+
+    if (self.bounds == null or self.inner_bounds == null or
+        (self.monitor != null and
+            !geom.empty() and
+            (geom.width != self.inner_bounds.?.width or
+                geom.height != self.inner_bounds.?.height)))
+    {
+        switch (self.surface) {
+            .XDG => |surface| {
+                try self.resize(self.bounds, true);
+
+                if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
+                    self.resize_serial = 0;
+            },
+            .X11 => |surface| {
+                try self.resize(self.bounds, true);
+
+                if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
+                    self.resize_serial = 0;
+            },
+        }
     }
 }
 
 pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !void {
-    _ = self;
-    _ = event;
+    if (self.monitor == null)
+        return;
+    if (self.surface != .X11)
+        return;
 
-    std.log.warn("TODO: configure x11", .{});
+    if (self.floating or !self.managed)
+        try self.resize(.{ .x = event.x, .y = event.y, .width = event.width, .height = event.height }, false)
+    else
+        self.monitor.?.arrangeClients();
 }
 
 pub fn activate(self: *Client) !void {
-    _ = self;
+    if (self.surface != .X11)
+        return;
 
-    std.log.warn("TODO: activate x11", .{});
+    self.surface.X11.activate(true);
 }
 
 pub fn unmap(self: *Client) !void {
@@ -554,9 +603,8 @@ pub fn unmap(self: *Client) !void {
                 std.log.warn("TODO: unmap managed x11 windows", .{});
             } else {
                 // TODO: remove exclusive focus
-                // if (client_surface(client) == seat.keyboard_state.focused_surface)
-                //     focusclient(client, true);
-                std.log.warn("TODO: unmap unmanaged x11 windows", .{});
+                if (self.getSurface() == self.session.input.seat.keyboard_state.focused_surface)
+                    try self.session.focus(self, true);
             }
         },
     }
@@ -571,8 +619,6 @@ pub fn deinit(self: *Client) void {
         },
         .X11 => {
             self.events.x11.map_event.link.remove();
-            // self.events.x11.unmap_event.link.remove();
-            // self.events.x11.unmap_event.link.remove();
         },
     }
 
@@ -602,7 +648,6 @@ pub fn isStopped(self: *Client) bool {
             std.log.warn("TODO: check client stopped", .{});
             return false;
         },
-        // .XDG => |surface| surface.surface.mapped,
     };
 }
 
@@ -614,7 +659,21 @@ pub fn notifyEnter(self: *Client, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
     }
 }
 
-pub fn setMonitor(self: *Client, target_monitor: ?*Monitor, tags: ?std.DynamicBitSet) !void {
+pub fn activateSurface(self: *Client, active: bool) void {
+    switch (self.surface) {
+        .X11 => |surface| surface.activate(active),
+        .XDG => |surface| _ = surface.role_data.toplevel.?.setActivated(active),
+    }
+}
+
+pub fn close(self: *Client) void {
+    switch (self.surface) {
+        .X11 => |surface| surface.close(),
+        .XDG => |surface| surface.role_data.toplevel.?.sendClose(),
+    }
+}
+
+pub fn setMonitor(self: *Client, target_monitor: ?*Monitor, tag: ?usize) !void {
     const old_monitor = self.monitor;
 
     if (old_monitor == target_monitor)
@@ -623,17 +682,23 @@ pub fn setMonitor(self: *Client, target_monitor: ?*Monitor, tags: ?std.DynamicBi
     self.monitor = target_monitor;
     self.prev_bounds = self.bounds;
 
-    if (old_monitor) |old|
+    if (old_monitor) |old| {
         self.getSurface().sendLeave(old.output);
+        old.arrangeClients();
+    }
 
     if (target_monitor) |new| {
         try self.resize(self.bounds, false);
         self.getSurface().sendEnter(new.output);
-        if (tags) |new_tags|
-            self.tags = new_tags;
+        if (tag) |new_tag|
+            self.tag = new_tag;
+
+        self.tag = new.tag;
 
         // self.setFullscreen(self.isfullscreen);
+
+        new.arrangeClients();
     }
 
-    // self.session.focus(self, true);
+    try self.session.focus(self, true);
 }

@@ -99,13 +99,13 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
     const old_state = surf.current;
     surf.current = surf.pending;
     self.mapped = true;
-    self.monitor.arrange();
+    self.monitor.arrangeLayers();
     surf.current = old_state;
 }
 
 pub fn map(self: *LayerSurface) !void {
     self.surface.surface.sendEnter(self.monitor.output);
-    // motionnotify(0, null, 0, 0, 0, 0);
+    try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
 }
 
 pub fn commit(self: *LayerSurface) !void {
@@ -125,10 +125,30 @@ pub fn commit(self: *LayerSurface) !void {
 
     if (@as(u32, @bitCast(self.surface.current.committed)) == 0 and self.mapped == self.surface.surface.mapped)
         return;
+
+    self.mapped = self.surface.surface.mapped;
+
+    self.monitor.arrangeLayers();
+}
+
+pub fn notifyEnter(self: *LayerSurface, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
+    if (kb) |keyb| {
+        seat.keyboardNotifyEnter(self.surface.surface, &keyb.keycodes, &keyb.modifiers);
+    } else {
+        seat.keyboardNotifyEnter(self.surface.surface, &.{}, null);
+    }
 }
 
 pub fn unmap(self: *LayerSurface) !void {
-    std.log.warn("TODO: unmap layer surf {*}", .{self});
+    self.mapped = false;
+    self.scene_tree.node.setEnabled(false);
+    if (self.session.exclusive_focus == self)
+        self.session.exclusive_focus = null;
+
+    self.monitor = @ptrFromInt(self.surface.output.?.data);
+    if (self.surface.output.?.data != 0)
+        self.monitor.arrangeLayers();
+    try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
 }
 
 pub fn deinit(self: *LayerSurface) void {
@@ -136,7 +156,7 @@ pub fn deinit(self: *LayerSurface) void {
 
     self.link.remove();
 
-    self.monitor.arrange();
+    self.monitor.arrangeLayers();
 
     self.events.map_event.link.remove();
     self.events.unmap_event.link.remove();
@@ -144,6 +164,4 @@ pub fn deinit(self: *LayerSurface) void {
     self.events.commit_event.link.remove();
 
     self.session.config.allocator.destroy(self);
-
-    std.log.warn("deinit {*}, couldnt find window in list", .{self});
 }
