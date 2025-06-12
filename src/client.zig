@@ -3,6 +3,7 @@ const wlr = @import("wlroots");
 const std = @import("std");
 
 const Session = @import("session.zig");
+const Monitor = @import("monitor.zig");
 
 const Client = @This();
 
@@ -66,9 +67,12 @@ events: ClientEvents,
 
 scene: *wlr.SceneTree = undefined,
 scene_surface: *wlr.SceneTree = undefined,
-bounds: ?wlr.Box = null,
-border: i32 = 0,
 
+tags: std.DynamicBitSet,
+bounds: ?wlr.Box = null,
+prev_bounds: ?wlr.Box = null,
+border: i32 = 0,
+monitor: ?*Monitor = null,
 managed: bool = false,
 frame: ?ClientFrame = null,
 fullscreen: bool = false,
@@ -77,6 +81,9 @@ container: ?u8 = 0,
 update_lock: std.Thread.Mutex = .{},
 
 resize_serial: u32 = 0,
+
+link: wl.list.Link = undefined,
+focus_link: wl.list.Link = undefined,
 
 // TODO: config
 const TITLE_HEIGHT = 20;
@@ -176,18 +183,14 @@ const Listeners = struct {
         const events: *X11ClientEvents = @fieldParentPtr("deinit_event", listener);
         const client: *Client = @fieldParentPtr("events", @as(*ClientEvents, @ptrCast(events)));
 
-        client.deinit() catch |ex| {
-            @panic(@errorName(ex));
-        };
+        client.deinit();
     }
 
     pub fn deinit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
         const events: *XDGClientEvents = @fieldParentPtr("deinit_event", listener);
         const client: *Client = @fieldParentPtr("events", @as(*ClientEvents, @ptrCast(events)));
 
-        client.deinit() catch |ex| {
-            @panic(@errorName(ex));
-        };
+        client.deinit();
     }
 };
 
@@ -197,10 +200,10 @@ fn sharesTabs(self: *const Client, other: *Client) bool {
 }
 
 pub fn updateTree(self: *Client, session: *Session) !void {
+    if (self.isStopped()) return;
+
     self.update_lock.lock();
     defer self.update_lock.unlock();
-
-    std.log.warn("TODO: check client stopped", .{});
 
     var geom = self.bounds orelse return;
     var child_geom = wlr.Box{
@@ -210,15 +213,17 @@ pub fn updateTree(self: *Client, session: *Session) !void {
         .height = geom.height,
     };
 
-    if (geom.width == 0 and geom.height == 0) {
-        std.log.warn("TODO: zero size", .{});
+    if (geom.width == 0 and geom.height == 0)
         return;
-    }
 
     var totalTabs: i32 = 0;
-    for (session.clients.items) |tabClient| {
-        if (!self.sharesTabs(tabClient))
-            totalTabs += 1;
+
+    {
+        var iter = session.clients.iterator(.forward);
+        while (iter.next()) |tabClient| {
+            if (!self.sharesTabs(tabClient))
+                totalTabs += 1;
+        }
     }
 
     if (self.frame) |frame| {
@@ -290,12 +295,15 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
 
                     surface.role_data.popup.?.unconstrainFromBox(&bounds);
 
+                    const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
+
                     self.* = .{
                         .surface = new_surface,
                         .scene_surface = scene_tree,
                         .session = session,
                         .managed = false,
                         .events = self.events,
+                        .tags = tags,
                     };
 
                     std.log.info("created popup", .{});
@@ -313,11 +321,14 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
             // surface.events.request_resize.add(&self.events.x11.resize_event);
 
             if (surface.role == .none) {
+                const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
+
                 self.* = .{
                     .surface = new_surface,
                     .session = session,
                     .managed = false,
                     .events = self.events,
+                    .tags = tags,
                 };
 
                 std.log.info("created managed client", .{});
@@ -331,7 +342,7 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
             // surface.role_data.toplevel.?.events.add(&self.events.xdg.resize_event);
             // surface.role_data.toplevel.?.events.configure.add(&self.events.xdg.configure_event);
 
-            std.log.info("created client", .{});
+            const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
 
             self.* = .{
                 .surface = new_surface,
@@ -339,7 +350,12 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
                 .border = 1,
                 .managed = true,
                 .events = self.events,
+                .tags = tags,
             };
+
+            std.log.info("created client", .{});
+
+            return;
         },
         .X11 => |surface| {
             self.events = .{ .x11 = .{} };
@@ -362,7 +378,7 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
 
             surface.data = @intFromPtr(self);
 
-            std.log.info("created client", .{});
+            const tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len);
 
             self.* = .{
                 .surface = new_surface,
@@ -370,7 +386,10 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
                 .border = 1,
                 .managed = !surface.override_redirect,
                 .events = self.events,
+                .tags = tags,
             };
+
+            std.log.info("created x11 client", .{});
         },
     }
 }
@@ -468,6 +487,9 @@ pub fn resize(self: *Client, target_bounds: ?wlr.Box, force: bool) !void {
         .height = bounds.height,
     };
 
+    if (view_bounds.width == 0 or view_bounds.height == 0)
+        return;
+
     //TODO: frame?
 
     switch (self.surface) {
@@ -496,8 +518,11 @@ pub fn commit(self: *Client) !void {
             if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
                 self.resize_serial = 0;
         },
-        else => {
-            std.log.warn("TODO: commit non xdg", .{});
+        .X11 => |surface| {
+            try self.resize(self.bounds, true);
+
+            if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
+                self.resize_serial = 0;
         },
     }
 }
@@ -537,7 +562,7 @@ pub fn unmap(self: *Client) !void {
     }
 }
 
-pub fn deinit(self: *Client) !void {
+pub fn deinit(self: *Client) void {
     switch (self.surface) {
         .XDG => {
             self.events.xdg.map_event.link.remove();
@@ -551,16 +576,9 @@ pub fn deinit(self: *Client) !void {
         },
     }
 
-    for (self.session.clients.items, 0..) |client, idx| {
-        if (@intFromPtr(client) == @intFromPtr(self)) {
-            const removed_client = self.session.clients.swapRemove(idx);
-            self.session.config.allocator.destroy(removed_client);
-
-            return;
-        }
-    }
-
-    std.log.warn("deinit {*}, couldnt find window in list", .{self});
+    self.link.remove();
+    self.focus_link.remove();
+    self.session.config.allocator.destroy(self);
 }
 
 pub fn getSurface(self: *Client) *wlr.Surface {
@@ -570,10 +588,52 @@ pub fn getSurface(self: *Client) *wlr.Surface {
     };
 }
 
+pub fn isMapped(self: *Client) bool {
+    return switch (self.surface) {
+        .X11 => |surface| surface.surface.?.mapped,
+        .XDG => |surface| surface.surface.mapped,
+    };
+}
+
+pub fn isStopped(self: *Client) bool {
+    return switch (self.surface) {
+        .X11 => false,
+        .XDG => {
+            std.log.warn("TODO: check client stopped", .{});
+            return false;
+        },
+        // .XDG => |surface| surface.surface.mapped,
+    };
+}
+
 pub fn notifyEnter(self: *Client, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
     if (kb) |keyb| {
         seat.keyboardNotifyEnter(self.getSurface(), &keyb.keycodes, &keyb.modifiers);
     } else {
         seat.keyboardNotifyEnter(self.getSurface(), &.{}, null);
     }
+}
+
+pub fn setMonitor(self: *Client, target_monitor: ?*Monitor, tags: ?std.DynamicBitSet) !void {
+    const old_monitor = self.monitor;
+
+    if (old_monitor == target_monitor)
+        return;
+
+    self.monitor = target_monitor;
+    self.prev_bounds = self.bounds;
+
+    if (old_monitor) |old|
+        self.getSurface().sendLeave(old.output);
+
+    if (target_monitor) |new| {
+        try self.resize(self.bounds, false);
+        self.getSurface().sendEnter(new.output);
+        if (tags) |new_tags|
+            self.tags = new_tags;
+
+        // self.setFullscreen(self.isfullscreen);
+    }
+
+    // self.session.focus(self, true);
 }

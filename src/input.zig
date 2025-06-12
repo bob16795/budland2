@@ -24,7 +24,9 @@ const InputEvents = struct {
     cursor_motion_absolute_event: wl.Listener(*wlr.Pointer.event.MotionAbsolute) = .init(Listeners.cursor_motion_absolute),
     cursor_button_event: wl.Listener(*wlr.Pointer.event.Button) = .init(Listeners.cursor_button),
     cursor_axis_event: wl.Listener(*wlr.Pointer.event.Axis) = .init(Listeners.cursor_axis),
-    cursor_frame_event: wl.Listener(void) = .init(Listeners.cursor_frame),
+    cursor_frame_event: wl.Listener(*wlr.Cursor) = .init(Listeners.cursor_frame),
+
+    request_set_cursor_event: wl.Listener(*wlr.Seat.event.RequestSetCursor) = .init(Listeners.request_set_cursor),
 
     new_input_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.new_input),
 };
@@ -52,14 +54,27 @@ const Keyboard = struct {
 
         var handled = false;
 
+        const config = self.input.session.config;
+
         if (!self.input.locked and
             // wayland_data.input_inhibit_mgr.active_inhibitor == null and
             key_data.state == .pressed)
         {
             for (keysyms) |sym| {
                 handled = handled or false;
-                _ = sym;
-                //handled = keybinding(mods, sym) or handled;
+                if (@intFromEnum(sym) == xkb.Keysym.Escape and
+                    modifier_mask.alt and modifier_mask.shift)
+                {
+                    self.input.session.quit();
+                    handled = true;
+                }
+
+                for (config.binds.items) |bind| {
+                    if (bind.mod == modifier_mask and bind.keysym == sym) {
+                        config.apply(bind.operation) catch {};
+                        handled = true;
+                    }
+                }
             }
         }
 
@@ -78,9 +93,8 @@ const Keyboard = struct {
     }
 
     pub fn modifiers(self: *Keyboard) !void {
-        _ = self;
-
-        // std.log.warn("TODO: keyboard modifiers", .{});
+        self.input.seat.setKeyboard(self.keyboard);
+        self.input.seat.keyboardNotifyModifiers(&self.keyboard.modifiers);
     }
 };
 
@@ -121,7 +135,7 @@ const Listeners = struct {
         };
     }
 
-    pub fn cursor_frame(listener: *wl.Listener(void)) void {
+    pub fn cursor_frame(listener: *wl.Listener(*wlr.Cursor), _: *wlr.Cursor) void {
         const events: *InputEvents = @fieldParentPtr("cursor_frame_event", listener);
         const self: *Input = @fieldParentPtr("events", events);
 
@@ -135,6 +149,15 @@ const Listeners = struct {
         const self: *Input = @fieldParentPtr("events", events);
 
         self.new_input(device) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    pub fn request_set_cursor(listener: *wl.Listener(*wlr.Seat.event.RequestSetCursor), event: *wlr.Seat.event.RequestSetCursor) void {
+        const events: *InputEvents = @fieldParentPtr("request_set_cursor_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.request_set_cursor(event) catch |ex| {
             @panic(@errorName(ex));
         };
     }
@@ -181,6 +204,8 @@ pub fn init(self: *Input, session: *Session) !void {
     cursor.events.motion.add(&self.events.cursor_motion_event);
     cursor.events.motion_absolute.add(&self.events.cursor_motion_absolute_event);
     cursor.events.button.add(&self.events.cursor_button_event);
+    cursor.events.axis.add(&self.events.cursor_axis_event);
+    cursor.events.frame.add(&self.events.cursor_frame_event);
 
     const xcursor_manager = try wlr.XcursorManager.create(null, 24);
 
@@ -188,8 +213,9 @@ pub fn init(self: *Input, session: *Session) !void {
 
     // seat stuff
     const seat = try wlr.Seat.create(wayland_data.server, "seat0");
+    seat.events.request_set_cursor.add(&self.events.request_set_cursor_event);
 
-    // std.log.warn("TODO: virtual keyboards", .{});
+    std.log.warn("TODO: virtual keyboards", .{});
 
     const relative_pointer_manager = try wlr.RelativePointerManagerV1.create(wayland_data.server);
 
@@ -224,7 +250,7 @@ pub fn cursor_motion(self: *Input, motion: *wlr.Pointer.event.Motion) !void {
     _ = self;
     _ = motion;
 
-    // std.log.warn("TODO: cursor motion", .{});
+    std.log.warn("TODO: cursor motion", .{});
 }
 
 pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbsolute) !void {
@@ -234,34 +260,29 @@ pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbs
     const dx = layout_x - self.cursor.x;
     const dy = layout_y - self.cursor.y;
 
-    try self.motion_notify(@intCast(motion.time_msec), motion.device, dx, dy, dx, dy);
+    try self.motionNotify(@intCast(motion.time_msec), motion.device, dx, dy, dx, dy);
 }
 
-pub fn motion_notify(
+const MotionError = error{};
+
+pub fn motionNotify(
     self: *Input,
     time: usize,
-    device: *wlr.InputDevice,
+    device: ?*wlr.InputDevice,
     dx_accel: f64,
     dy_accel: f64,
     dx_unaccel: f64,
     dy_unaccel: f64,
-) !void {
+) MotionError!void {
     const wayland_data = self.session.wayland_data.?;
 
     const dx = dx_accel;
     const dy = dy_accel;
 
-    const screen_x: f64 = 0;
-    const screen_y: f64 = 0;
-    // const screen_x_confirmed: f64 = 0;
-    // const screen_y_confirmed: f64 = 0;
-
-    const client = self.session.getClientAt(self.cursor.x, self.cursor.y);
-
-    // std.log.warn("TODO: hover client", .{});
+    const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
 
     if (self.cursor_mode == .pressed and self.seat.drag == null) {
-        // std.log.warn("TODO: check if clicking window", .{});
+        std.log.warn("TODO: check if clicking window", .{});
     }
 
     if (time > 0) {
@@ -274,7 +295,7 @@ pub fn motion_notify(
 
         wayland_data.idle_notifier.notifyActivity(self.seat);
 
-        self.session.selmon = self.session.getMonitorAt(self.cursor.x, self.cursor.y);
+        self.session.selmon = objects.monitor;
     }
 
     if (self.seat.drag) |drag| {
@@ -293,7 +314,11 @@ pub fn motion_notify(
     }
 
     // TODO surface null
-    if (self.seat.drag == null and !std.mem.eql(u8, std.mem.span(self.xcursor_image), "left_ptr")) {
+    if (objects.surface == null and
+        self.seat.drag == null and
+        !std.mem.eql(u8, std.mem.span(self.xcursor_image), "left_ptr") and
+        !std.mem.eql(u8, std.mem.span(self.xcursor_image), ""))
+    {
         self.cursor.setXcursor(self.xcursor_manager, self.xcursor_image);
         // self.xcursor_image = "left_ptr";
         // const xcursor = self.xcursor_manager.getXcursor(self.xcursor_image, 1.0);
@@ -301,26 +326,47 @@ pub fn motion_notify(
         // c.wlr_xcursor_manager_set_cursor_image(cursor_mgr, cursor_image.?.ptr, cursor);
     }
 
-    if (client) |focusing|
-        try self.pointerFocus(focusing, focusing.getSurface(), screen_x, screen_y, time);
+    if (objects.client) |focusing|
+        try self.pointerFocus(focusing, objects.surface.?, objects.surface_x, objects.surface_y, time);
 }
 
-pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: *wlr.Surface, x: f64, y: f64, time: usize) !void {
+pub fn pointerFocus(self: *Input, target_client: *Client, surface: *wlr.Surface, x: f64, y: f64, time: usize) !void {
     const internal_call = time == 0;
+    var atime: usize = time;
 
-    if (!internal_call and target_client != null and
-        !(target_client.?.surface == .X11 and !target_client.?.managed))
+    if (!internal_call and
+        !(target_client.surface == .X11 and !target_client.managed))
         try self.session.focus(target_client, false);
 
+    if (internal_call) {
+        const now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
+            @panic("CLOCK_MONOTONIC not supported");
+
+        atime = @bitCast(now.sec * 1000 + @divTrunc(now.nsec, 1000000));
+    }
+
     self.seat.pointerNotifyEnter(surface, x, y);
-    // self.seat.notifyActivate(true);
+    self.seat.pointerNotifyMotion(@intCast(atime), x, y);
 }
 
 pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
-    _ = self;
-    _ = button;
+    const wayland_data = self.session.wayland_data.?;
 
-    // std.log.warn("TODO: cursor button", .{});
+    wayland_data.idle_notifier.notifyActivity(self.seat);
+
+    switch (button.state) {
+        .pressed => {
+            const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
+
+            if (objects.client) |target| {
+                if (target.managed)
+                    try self.session.focus(objects.client, true);
+            }
+        },
+        else => {},
+    }
+
+    _ = self.seat.pointerNotifyButton(button.time_msec, button.button, button.state);
 }
 
 pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
@@ -331,9 +377,17 @@ pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
 }
 
 pub fn cursor_frame(self: *Input) !void {
-    _ = self;
+    self.seat.pointerNotifyFrame();
+}
 
-    std.log.warn("TODO: cursor frame", .{});
+pub fn request_set_cursor(self: *Input, event: *wlr.Seat.event.RequestSetCursor) !void {
+    if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
+        return;
+
+    self.xcursor_image = "";
+    if (event.seat_client == self.seat.pointer_state.focused_client) {
+        self.cursor.setSurface(event.surface, event.hotspot_x, event.hotspot_y);
+    }
 }
 
 const xkb_rules: xkb.RuleNames = .{
@@ -398,7 +452,6 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
     var caps: wl.Seat.Capability = .{
         .pointer = true,
     };
-    caps.keyboard = false;
     if (self.keyboards.items.len != 0)
         caps.keyboard = true;
 

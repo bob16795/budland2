@@ -25,6 +25,7 @@ scene: *wlr.SceneLayerSurfaceV1,
 scene_tree: *wlr.SceneTree,
 popups: *wlr.SceneTree,
 mapped: bool,
+link: wl.list.Link = undefined,
 
 const Listeners = struct {
     pub fn map(listener: *wl.Listener(void)) void {
@@ -58,9 +59,7 @@ const Listeners = struct {
         const events: *LayerSurfaceEvents = @fieldParentPtr("deinit_event", listener);
         const surface: *LayerSurface = @fieldParentPtr("events", events);
 
-        surface.deinit() catch |ex| {
-            @panic(@errorName(ex));
-        };
+        surface.deinit();
     }
 };
 
@@ -95,7 +94,7 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
 
     scene_tree.node.data = @intFromPtr(self);
 
-    try monitor.layers[@intCast(@intFromEnum(surf.pending.layer))].append(self);
+    monitor.layers[@intCast(@intFromEnum(surf.pending.layer))].append(self);
 
     const old_state = surf.current;
     surf.current = surf.pending;
@@ -132,27 +131,19 @@ pub fn unmap(self: *LayerSurface) !void {
     std.log.warn("TODO: unmap layer surf {*}", .{self});
 }
 
-pub fn deinit(self: *LayerSurface) !void {
+pub fn deinit(self: *LayerSurface) void {
     std.log.info("deinit {*}", .{self});
 
-    const list = &self.monitor.layers[@intCast(@intFromEnum(self.surface.pending.layer))];
-
-    for (list.items, 0..) |client, idx| {
-        if (@intFromPtr(client) == @intFromPtr(self)) {
-            const removed_surface = list.swapRemove(idx);
-
-            self.events.map_event.link.remove();
-            self.events.unmap_event.link.remove();
-            self.events.deinit_event.link.remove();
-            self.events.commit_event.link.remove();
-
-            self.session.config.allocator.destroy(removed_surface);
-
-            return;
-        }
-    }
+    self.link.remove();
 
     self.monitor.arrange();
+
+    self.events.map_event.link.remove();
+    self.events.unmap_event.link.remove();
+    self.events.deinit_event.link.remove();
+    self.events.commit_event.link.remove();
+
+    self.session.config.allocator.destroy(self);
 
     std.log.warn("deinit {*}, couldnt find window in list", .{self});
 }

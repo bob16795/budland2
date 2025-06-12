@@ -27,11 +27,28 @@ mode: wlr.Box = .{
     .width = 0,
     .height = 0,
 },
-layers: [TOTAL_LAYERS]std.ArrayList(*LayerSurface),
+layers: [TOTAL_LAYERS]wl.list.Head(LayerSurface, .link) = undefined,
 tags: std.DynamicBitSet,
+link: wl.list.Link = undefined,
 
-frame_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(renderMonitor),
-destroy_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(deinit),
+frame_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.frame),
+deinit_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.deinit),
+
+const Listeners = struct {
+    fn frame(listener: *wl.Listener(*wlr.Output), _: *wlr.Output) void {
+        const self: *Monitor = @fieldParentPtr("frame_event", listener);
+
+        self.frame() catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn deinit(listener: *wl.Listener(*wlr.Output), _: *wlr.Output) void {
+        const self: *Monitor = @fieldParentPtr("deinit_event", listener);
+
+        self.deinit();
+    }
+};
 
 pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
     const data = &(session.wayland_data orelse return error.SessionNotSetup);
@@ -65,9 +82,6 @@ pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
     self.* = .{
         .output = output,
         .session = session,
-        .layers = .{
-            std.ArrayList(*LayerSurface).init(session.config.allocator),
-        } ** TOTAL_LAYERS,
         .tags = try std.DynamicBitSet.initEmpty(session.config.allocator, session.config.tags.items.len),
         .fullscreen_bg = fullscreen_bg,
         .scene_output = scene_output,
@@ -75,14 +89,15 @@ pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
         .mode = output_box,
     };
 
+    for (&self.layers) |*layer|
+        layer.init();
+
     output.events.frame.add(&self.frame_event);
-    output.events.destroy.add(&self.destroy_event);
+    output.events.destroy.add(&self.deinit_event);
 }
 
-fn renderMonitor(listener: *wl.Listener(*wlr.Output), _: *wlr.Output) void {
-    const monitor: *Monitor = @fieldParentPtr("frame_event", listener);
-
-    const scene_output = monitor.session.wayland_data.?.scene.getSceneOutput(monitor.output).?;
+pub fn frame(self: *Monitor) !void {
+    const scene_output = self.session.wayland_data.?.scene.getSceneOutput(self.output).?;
     _ = scene_output.commit(null);
 
     var now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
@@ -91,14 +106,16 @@ fn renderMonitor(listener: *wl.Listener(*wlr.Output), _: *wlr.Output) void {
 }
 
 pub fn close(self: *Monitor) !void {
-    if (self.session.monitors.items.len == 0) {
+    if (self.session.monitors.empty()) {
         self.session.selmon = null;
     } else {
         self.session.selmon = null;
-        for (self.session.monitors.items) |m|
+
+        var iter = self.session.monitors.iterator(.forward);
+        while (iter.next()) |monitor|
             if (self.session.selmon != self) {
-                self.session.selmon = m;
-                if (m.output.enabled) break;
+                self.session.selmon = monitor;
+                if (monitor.output.enabled) break;
             };
     }
 
@@ -109,7 +126,8 @@ pub fn arrange(self: *Monitor) void {
     var usable = self.mode;
     const layers_above_shell = [_]u32{ 3, 4 };
 
-    for (self.session.clients.items) |client| {
+    var iter = self.session.clients.iterator(.forward);
+    while (iter.next()) |client| {
         client.scene.node.setEnabled(true);
     }
 
@@ -138,7 +156,8 @@ pub fn arrange(self: *Monitor) void {
 fn arrangelayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) void {
     const full_area = self.mode;
 
-    for (self.layers[idx].items) |layersurface| {
+    var iter = self.layers[idx].iterator(.forward);
+    while (iter.next()) |layersurface| {
         const wlr_layer_surface = layersurface.surface;
         const state = &wlr_layer_surface.current;
 
@@ -155,10 +174,13 @@ fn arrangelayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) v
     }
 }
 
-fn deinit(listener: *wl.Listener(*wlr.Output), _: *wlr.Output) void {
-    const monitor: *Monitor = @fieldParentPtr("destroy_event", listener);
+pub fn deinit(self: *Monitor) void {
+    self.frame_event.link.remove();
+    self.deinit_event.link.remove();
 
-    for (monitor.layers) |layer|
-        for (layer.items) |sublayer|
-            sublayer.deinit() catch {};
+    self.link.remove();
+    if (self.session.selmon == self)
+        self.session.selmon = null;
+
+    self.session.config.allocator.destroy(self);
 }

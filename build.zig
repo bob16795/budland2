@@ -74,6 +74,8 @@ pub fn build(b: *std.Build) void {
     budwm.linkSystemLibrary("xkbcommon");
     budwm.linkSystemLibrary("pixman-1");
 
+    b.installArtifact(budwm);
+
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
