@@ -27,6 +27,7 @@ const InputEvents = struct {
     cursor_frame_event: wl.Listener(*wlr.Cursor) = .init(Listeners.cursor_frame),
 
     request_set_cursor_event: wl.Listener(*wlr.Seat.event.RequestSetCursor) = .init(Listeners.request_set_cursor),
+    set_cursor_shape_event: wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape) = .init(Listeners.set_cursor_shape),
 
     new_input_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.new_input),
 };
@@ -153,6 +154,15 @@ const Listeners = struct {
         };
     }
 
+    pub fn set_cursor_shape(listener: *wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape), event: *wlr.CursorShapeManagerV1.event.RequestSetShape) void {
+        const events: *InputEvents = @fieldParentPtr("set_cursor_shape_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.set_cursor_shape(event) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
     pub fn request_set_cursor(listener: *wl.Listener(*wlr.Seat.event.RequestSetCursor), event: *wlr.Seat.event.RequestSetCursor) void {
         const events: *InputEvents = @fieldParentPtr("request_set_cursor_event", listener);
         const self: *Input = @fieldParentPtr("events", events);
@@ -184,9 +194,10 @@ const Listeners = struct {
 session: *Session,
 cursor: *wlr.Cursor,
 cursor_mode: CursorMode,
-xcursor_image: [*:0]const u8 = "left_ptr",
+xcursor_image: ?[*:0]const u8 = null,
 
 relative_pointer_manager: *wlr.RelativePointerManagerV1,
+cursor_shape_manager: *wlr.CursorShapeManagerV1,
 xcursor_manager: *wlr.XcursorManager,
 keyboards: std.ArrayList(*Keyboard),
 seat: *wlr.Seat,
@@ -212,8 +223,10 @@ pub fn init(self: *Input, session: *Session) !void {
     cursor.events.frame.add(&self.events.cursor_frame_event);
 
     const xcursor_manager = try wlr.XcursorManager.create(null, 24);
-
     wayland_data.backend.events.new_input.add(&self.events.new_input_event);
+
+    const cursor_shape_manager = try wlr.CursorShapeManagerV1.create(wayland_data.server, 1);
+    cursor_shape_manager.events.request_set_shape.add(&self.events.set_cursor_shape_event);
 
     // seat stuff
     const seat = try wlr.Seat.create(wayland_data.server, "seat0");
@@ -232,12 +245,14 @@ pub fn init(self: *Input, session: *Session) !void {
         .seat = seat,
         .events = self.events,
         .relative_pointer_manager = relative_pointer_manager,
+        .cursor_shape_manager = cursor_shape_manager,
     };
 }
 
 pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
     xwayland.setSeat(self.seat);
 
+    self.xcursor_image = "left_ptr";
     if (self.xcursor_manager.getXcursor("left_ptr", 1)) |xcursor| {
         xwayland.setCursor(
             xcursor.images[0].buffer,
@@ -264,7 +279,9 @@ pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbs
     try self.motionNotify(@intCast(motion.time_msec), motion.device, dx, dy, dx, dy);
 }
 
-const MotionError = error{};
+const MotionError = error{
+    TODO,
+};
 
 pub fn motionNotify(
     self: *Input,
@@ -315,36 +332,36 @@ pub fn motionNotify(
 
     if (self.cursor_mode == .move) {
         // if (!self.grab_client.isFullscreen())
-        try self.grab_client.resize(.{
+        self.grab_client.resize(.{
             .x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_x,
             .y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_y,
-            .width = self.grab_client.bounds.?.width,
-            .height = self.grab_client.bounds.?.height,
-        }, true);
+            .width = self.grab_client.bounds.width,
+            .height = self.grab_client.bounds.height,
+        }, true) catch return error.TODO;
 
         return;
     } else if (self.cursor_mode == .resize) {
         // if (!self.grab_client.isFullscreen())
-        try self.grab_client.resize(.{
-            .x = self.grab_client.bounds.?.x,
-            .y = self.grab_client.bounds.?.y,
-            .width = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.?.x,
-            .height = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.?.y,
-        }, true);
+        self.grab_client.resize(.{
+            .x = self.grab_client.bounds.x,
+            .y = self.grab_client.bounds.y,
+            .width = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x,
+            .height = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y,
+        }, true) catch return error.TODO;
 
         return;
     }
 
     if (objects.surface == null and
         self.seat.drag == null and
-        !std.mem.eql(u8, std.mem.span(self.xcursor_image), "left_ptr") and
-        !std.mem.eql(u8, std.mem.span(self.xcursor_image), ""))
+        self.xcursor_image != null and
+        !std.mem.eql(u8, std.mem.span(self.xcursor_image.?), "left_ptr"))
     {
-        self.cursor.setXcursor(self.xcursor_manager, self.xcursor_image);
+        self.cursor.setXcursor(self.xcursor_manager, self.xcursor_image.?);
     }
 
     if (objects.client) |focusing|
-        try self.pointerFocus(focusing, objects.surface.?, objects.surface_x, objects.surface_y, time);
+        try self.pointerFocus(focusing, focusing.getSurface(), objects.surface_x, objects.surface_y, time);
 }
 
 pub fn pointerFocus(self: *Input, target_client: *Client, surface: *wlr.Surface, x: f64, y: f64, time: usize) !void {
@@ -353,7 +370,7 @@ pub fn pointerFocus(self: *Input, target_client: *Client, surface: *wlr.Surface,
 
     if (!internal_call and
         !(target_client.surface == .X11 and !target_client.managed))
-        try self.session.focus(target_client, false);
+        try self.session.focusClient(target_client, false);
 
     if (internal_call) {
         const now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
@@ -377,7 +394,7 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
 
             if (objects.client) |target| {
                 if (target.managed)
-                    try self.session.focus(objects.client, true);
+                    try self.session.focusClient(target, true);
             }
 
             const keyboard = self.seat.getKeyboard();
@@ -393,13 +410,13 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                             self.grab_client = objects.client orelse
                                 return;
 
-                            self.grab_client.floating = true;
+                            self.grab_client.setFloating(true);
                             self.cursor_mode = .move;
-                            self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.?.x;
-                            self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.?.y;
+                            self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x;
+                            self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y;
 
                             self.xcursor_image = "fleur";
-                            if (self.xcursor_manager.getXcursor(self.xcursor_image, 1)) |xcursor| {
+                            if (self.xcursor_manager.getXcursor(self.xcursor_image.?, 1)) |xcursor| {
                                 const xwayland = self.session.wayland_data.?.xwayland;
 
                                 xwayland.setCursor(
@@ -416,18 +433,18 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                             self.grab_client = objects.client orelse
                                 return;
 
-                            self.grab_client.floating = true;
+                            self.grab_client.setFloating(true);
                             self.cursor_mode = .resize;
 
                             _ = self.cursor.warp(
                                 null,
-                                @floatFromInt(self.grab_client.bounds.?.x + self.grab_client.bounds.?.width),
-                                @floatFromInt(self.grab_client.bounds.?.y + self.grab_client.bounds.?.height),
+                                @floatFromInt(self.grab_client.bounds.x + self.grab_client.bounds.width),
+                                @floatFromInt(self.grab_client.bounds.y + self.grab_client.bounds.height),
                             );
                             // c.wlr_cursor_warp_closest(cursor, null, @as(f64, @floatFromInt(grabc.?.geom.x + grabc.?.geom.width)), @as(f64, @floatFromInt(grabc.?.geom.y + grabc.?.geom.height)));
 
                             self.xcursor_image = "bottom_right_corner";
-                            if (self.xcursor_manager.getXcursor(self.xcursor_image, 1)) |xcursor| {
+                            if (self.xcursor_manager.getXcursor(self.xcursor_image.?, 1)) |xcursor| {
                                 const xwayland = self.session.wayland_data.?.xwayland;
 
                                 xwayland.setCursor(
@@ -462,7 +479,7 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                 if (objects.monitor) |monitor| {
                     self.session.selmon = monitor;
 
-                    try self.grab_client.setMonitor(monitor, null);
+                    try self.grab_client.setMonitor(monitor);
                 }
             } else self.cursor_mode = .normal;
         },
@@ -484,11 +501,21 @@ pub fn cursor_frame(self: *Input) !void {
     self.seat.pointerNotifyFrame();
 }
 
+pub fn set_cursor_shape(self: *Input, event: *wlr.CursorShapeManagerV1.event.RequestSetShape) !void {
+    if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
+        return;
+
+    if (event.seat_client == self.seat.pointer_state.focused_client) {
+        self.xcursor_image = @tagName(event.shape);
+        self.cursor.setXcursor(self.xcursor_manager, @tagName(event.shape));
+    }
+}
+
 pub fn request_set_cursor(self: *Input, event: *wlr.Seat.event.RequestSetCursor) !void {
     if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
         return;
 
-    self.xcursor_image = "";
+    self.xcursor_image = null;
     if (event.seat_client == self.seat.pointer_state.focused_client) {
         self.cursor.setSurface(event.surface, event.hotspot_x, event.hotspot_y);
     }

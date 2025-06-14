@@ -26,6 +26,7 @@ scene_tree: *wlr.SceneTree,
 popups: *wlr.SceneTree,
 mapped: bool,
 link: wl.list.Link = undefined,
+bounds: wlr.Box = std.mem.zeroes(wlr.Box),
 
 const Listeners = struct {
     pub fn map(listener: *wl.Listener(void)) void {
@@ -81,18 +82,18 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
     const scene_tree = scene.tree;
     const popups = try parent_scene.createSceneTree();
 
+    scene_tree.node.data = @intFromPtr(self);
+
     self.* = .{
         .surface = surf,
         .scene = scene,
         .scene_tree = scene_tree,
         .popups = popups,
         .session = session,
-        .mapped = true,
+        .mapped = false,
         .events = self.events,
         .monitor = monitor,
     };
-
-    scene_tree.node.data = @intFromPtr(self);
 
     monitor.layers[@intCast(@intFromEnum(surf.pending.layer))].append(self);
 
@@ -104,7 +105,7 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
 }
 
 pub fn map(self: *LayerSurface) !void {
-    self.surface.surface.sendEnter(self.monitor.output);
+    // self.surface.surface.sendEnter(self.monitor.output);
     try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
 }
 
@@ -142,13 +143,15 @@ pub fn notifyEnter(self: *LayerSurface, seat: *wlr.Seat, kb: ?*wlr.Keyboard) voi
 pub fn unmap(self: *LayerSurface) !void {
     self.mapped = false;
     self.scene_tree.node.setEnabled(false);
-    if (self.session.exclusive_focus == self)
+
+    if (self.session.exclusive_focus == self.surface.surface)
         self.session.exclusive_focus = null;
 
     self.monitor = @ptrFromInt(self.surface.output.?.data);
     if (self.surface.output.?.data != 0)
         self.monitor.arrangeLayers();
-    try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
+
+    self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
 }
 
 pub fn deinit(self: *LayerSurface) void {

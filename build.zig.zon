@@ -36,6 +36,9 @@
         .wayland = .{
             .path = "../zig-wayland",
         },
+        .cairo = .{
+            .path = "../zig-cairo",
+        },
         .wlroots = .{
             .url = "git+https://github.com/swaywm/zig-wlroots#cd76b31bc1dfda1190b2ec7652dd60e6a41a30e1",
             .hash = "wlroots-0.18.3-dev-jmOlcrjJAwBYc41YeWLLuKKnFVDmPmtA86BPJ1XX78Uf",

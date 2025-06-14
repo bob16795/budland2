@@ -16,24 +16,14 @@ session: *Session,
 output: *wlr.Output,
 scene_output: *wlr.SceneOutput,
 fullscreen_bg: *wlr.SceneRect,
-position: wlr.Box,
-window: wlr.Box = .{
-    .x = 0,
-    .y = 0,
-    .width = 0,
-    .height = 0,
-},
-mode: wlr.Box = .{
-    .x = 0,
-    .y = 0,
-    .width = 0,
-    .height = 0,
-},
+window: wlr.Box,
+mode: wlr.Box,
 layers: [TOTAL_LAYERS]wl.list.Head(LayerSurface, .link) = undefined,
 tag: usize = 0,
 link: wl.list.Link = undefined,
 layout: usize = 0,
 layout_symbol: []const u8 = "{???}",
+state: wlr.Output.State,
 
 frame_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.frame),
 deinit_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.deinit),
@@ -58,66 +48,79 @@ pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
     const data = &(session.wayland_data orelse return error.SessionNotSetup);
     var output = output_in;
 
-    std.log.info("Create monitor", .{});
-
     if (!output.initRender(data.allocator, data.renderer)) {
         return error.DisplayRenderInitFailed;
     }
 
-    var state = wlr.Output.State.init();
-    defer state.finish();
-
     const fullscreen_bg = try data.layers.get(.LyrFS).createSceneRect(0, 0, &session.config.colors[0][1]);
     fullscreen_bg.node.setEnabled(false);
 
+    var mode: wlr.Box = std.mem.zeroes(wlr.Box);
+
+    self.state = wlr.Output.State.init();
+
+    const rule = (session.config.monitor_rules.get(std.mem.span(output.name)));
+    self.state.setEnabled(true);
+    self.state.setScale(rule.scale.?);
+    self.state.setTransform(rule.transform.?);
+    self.state.setAdaptiveSyncEnabled(true);
+    mode.x = rule.x.?;
+    mode.y = rule.y.?;
+
+    if (output.preferredMode()) |pref_mode|
+        self.state.setMode(pref_mode);
+
+    _ = output.commitState(&self.state);
+
     const scene_output = try data.scene.createSceneOutput(output);
-
-    // TODO: config
-    const position: ?wlr.Box = null;
-
-    const output_data = if (position) |pos|
-        try data.output_layout.add(output, pos.x, pos.y)
+    _ = if (mode.x != 0 and mode.y != 0)
+        try data.output_layout.add(output, mode.x, mode.y)
     else
         try data.output_layout.addAuto(output);
-
-    var output_box = std.mem.zeroes(wlr.Box);
-    output_data.layout.getBox(output, &output_box);
 
     self.* = .{
         .output = output,
         .session = session,
         .fullscreen_bg = fullscreen_bg,
         .scene_output = scene_output,
-        .position = position orelse output_box,
-        .mode = output_box,
+        .mode = mode,
+        .window = mode,
+        .state = self.state,
     };
+
+    session.wayland_data.?.output_layout.getBox(output, &self.mode);
+
+    std.log.info("Create monitor {s} at {}", .{ output.name, mode });
 
     for (&self.layers) |*layer|
         layer.init();
 
     output.events.frame.add(&self.frame_event);
     output.events.destroy.add(&self.deinit_event);
+
+    if (!self.output.commitState(&self.state)) {
+        std.log.info("fail create monitor {s} at {}", .{ output.name, mode });
+    }
 }
 
 pub fn frame(self: *Monitor) !void {
-    const scene_output = self.session.wayland_data.?.scene.getSceneOutput(self.output).?;
-
     commit: {
         var iter = self.session.clients.iterator(.forward);
         while (iter.next()) |client| {
             if (client.resize_serial != 0 and
                 !client.floating and
-                client.monitor == self and
+                self.clientVisible(client) and
                 !client.isStopped())
                 break :commit;
         }
 
-        _ = scene_output.commit(null);
+        // self.output.commitState(self.state);
+        _ = self.scene_output.commit(null);
     }
 
     var now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
         @panic("CLOCK_MONOTONIC not supported");
-    scene_output.sendFrameDone(&now);
+    self.scene_output.sendFrameDone(&now);
 }
 
 pub fn close(self: *Monitor) !void {
@@ -154,11 +157,11 @@ pub fn arrangeLayers(self: *Monitor) void {
         self.arrangeLayer(3 - i, &usable, false);
 
     for (LAYERS_ABOVE_SHELL) |idx| {
-        var iter = self.layers[idx].iterator(.forward);
+        var iter = self.layers[idx].iterator(.reverse);
         while (iter.next()) |layersurface| {
-            if (!self.session.input.locked and @intFromEnum(layersurface.surface.current.keyboard_interactive) != 0 and layersurface.mapped) {
-                try self.session.focus(null, false);
-                self.session.exclusive_focus = layersurface;
+            if (!self.session.input.locked and layersurface.surface.current.keyboard_interactive != .none and layersurface.mapped) {
+                self.session.focusClear();
+                self.session.exclusive_focus = layersurface.surface.surface;
                 layersurface.notifyEnter(self.session.input.seat, self.session.input.seat.getKeyboard());
                 return;
             }
@@ -187,45 +190,79 @@ pub fn arrangeClients(self: *Monitor) void {
 
     const solved: []bool = config.allocator.alloc(bool, config.containers.items.len) catch unreachable;
     defer config.allocator.free(solved);
-    var iter = self.session.clients.iterator(.forward);
-    while (iter.next()) |client| {
-        const visible = self.clientVisible(client);
-        client.scene.node.setEnabled(visible);
+    for (solved) |*s| s.* = false;
 
-        if (!client.floating) {
-            usage[client.container] = true;
-            solved[client.container] = true;
+    {
+        var iter = self.session.focus_clients.iterator(.forward);
+        while (iter.next()) |client| {
+            if (client.monitor == self) {
+                const visible = self.clientVisible(client);
+                client.scene.node.setEnabled(visible);
+
+                if (!client.floating and visible) {
+                    client.hide_frame = solved[client.container];
+                    solved[client.container] = true;
+                } else {
+                    client.hide_frame = false;
+                }
+            }
         }
     }
 
-    var done = false;
-    while (!done) {
-        done = true;
-
-        outer: for (config.containers.items, 0..) |container, idx| {
-            inner: for (container.children) |c| {
-                if (!solved[c.id]) {
-                    done = false;
-                    continue :outer;
-                }
-
-                if (usage[c.id]) {
-                    usage[idx] = true;
-                    break :inner;
-                }
+    for (solved, 0..) |u, u_idx| {
+        if (u) {
+            for (config.containers.items) |con| {
+                usage[con.id] = con.has(@intCast(u_idx)) or usage[con.id];
             }
+        }
+    }
 
-            solved[idx] = true;
+    // var done = false;
+    // while (!done) {
+    //     done = true;
+
+    //     outer: for (config.containers.items, 0..) |container, idx| {
+    //         inner: for (container.children) |c| {
+    //             if (!solved[c.id]) {
+    //                 done = false;
+    //                 continue :outer;
+    //             }
+
+    //             if (usage[c.id]) {
+    //                 usage[idx] = true;
+    //                 break :inner;
+    //             }
+    //         }
+
+    //         solved[idx] = true;
+    //     }
+    // }
+
+    var iter = self.session.clients.iterator(.forward);
+    while (iter.next()) |client| {
+        if (client.monitor == self) {
+            const visible = self.clientVisible(client);
+
+            if (!client.floating and visible) {
+                const border = if (client.frame.kind == .hide) 0 else client.border;
+
+                const new = config.layouts.items[self.layout].getSize(client.container, self.window, border, usage);
+
+                if (border != 0) {
+                    client.frame.kind = if (new.y == self.window.y)
+                        .border
+                    else
+                        .title;
+                }
+
+                client.resize(new, true) catch {};
+            }
         }
     }
 
     iter = self.session.clients.iterator(.forward);
-    while (iter.next()) |client| {
-        if (!client.floating) {
-            const new = config.layouts.items[self.layout].getSize(client.container, self.window, usage);
-            client.resize(new, true) catch {};
-        }
-    }
+    while (iter.next()) |client|
+        client.updateFrame() catch {};
 
     // iter = self.session.clients.iterator(.forward);
     // if (self.client.container) |container| {
@@ -250,17 +287,28 @@ fn arrangeLayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) v
         const wlr_layer_surface = layersurface.surface;
         const state = &wlr_layer_surface.current;
 
-        if (!layersurface.mapped) continue;
-
         if (exclusive != (state.exclusive_zone > 0))
             continue;
+
+        if (!layersurface.mapped)
+            return;
 
         layersurface.scene.configure(&full_area, usable);
         layersurface.popups.node.setPosition(
             layersurface.scene_tree.node.x,
-            layersurface.scene_tree.node.x,
+            layersurface.scene_tree.node.y,
         );
+        layersurface.bounds.x = layersurface.scene_tree.node.x;
+        layersurface.bounds.y = layersurface.scene_tree.node.y;
     }
+}
+
+pub fn setTag(self: *Monitor, tag: usize) void {
+    if (self.tag == tag)
+        return;
+
+    self.tag = tag;
+    self.arrangeClients();
 }
 
 pub fn deinit(self: *Monitor) void {

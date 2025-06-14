@@ -11,12 +11,15 @@ const LayerSurface = @import("layersurface.zig");
 
 const Session = @This();
 
-const Layer = enum {
+pub const Layer = enum {
     LyrBg,
     LyrBottom,
     LyrTop,
     LyrOverlay,
+
+    LyrTileShadows,
     LyrTile,
+    LyrFloatShadows,
     LyrFloat,
     LyrFS,
     LyrDragIcon,
@@ -64,7 +67,7 @@ input: Input = undefined,
 monitors: wl.list.Head(Monitor, .link) = undefined,
 clients: wl.list.Head(Client, .link) = undefined,
 focus_clients: wl.list.Head(Client, .focus_link) = undefined,
-exclusive_focus: ?*LayerSurface = null,
+exclusive_focus: ?*wlr.Surface = null,
 
 selmon: ?*Monitor = null,
 
@@ -77,6 +80,7 @@ new_xdg_surface_event: wl.Listener(*wlr.XdgSurface) = .init(Listeners.new_xdg_su
 new_xwayland_surface_event: wl.Listener(*wlr.XwaylandSurface) = .init(Listeners.new_xwayland_surface),
 new_toplevel_decoration_event: wl.Listener(*wlr.XdgToplevelDecorationV1) = .init(Listeners.new_toplevel_decoration),
 output_manager_apply_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerApply),
+output_manager_test_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerTest),
 
 const FOCUS_ORDER = [_]Layer{
     .LyrBlock, .LyrOverlay, .LyrTop, .LyrFS, .LyrFloat, .LyrTile, .LyrBottom, .LyrBg,
@@ -87,15 +91,6 @@ const Listeners = struct {
         const session: *Session = @fieldParentPtr("new_output_event", listener);
         const data = &session.wayland_data.?;
         if (!wlr_output.initRender(data.allocator, data.renderer)) return;
-
-        var state = wlr.Output.State.init();
-        defer state.finish();
-
-        state.setEnabled(true);
-        if (wlr_output.preferredMode()) |mode| {
-            state.setMode(mode);
-        }
-        if (!wlr_output.commitState(&state)) return;
 
         const monitor = session.config.allocator.create(Monitor) catch {
             std.log.err("failed to allocate new output", .{});
@@ -109,50 +104,24 @@ const Listeners = struct {
             return;
         };
 
-        session.monitors.append(monitor);
         wlr_output.data = @intFromPtr(monitor);
+        session.monitors.append(monitor);
+
+        session.updateMons() catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
+    pub fn outputManagerTest(listener: *wl.Listener(*wlr.OutputConfigurationV1), output_configuration: *wlr.OutputConfigurationV1) void {
+        const self: *Session = @fieldParentPtr("output_manager_apply_event", listener);
+
+        self.outputManagerApply(true, output_configuration);
     }
 
     pub fn outputManagerApply(listener: *wl.Listener(*wlr.OutputConfigurationV1), output_configuration: *wlr.OutputConfigurationV1) void {
-        std.log.info("output manager apply", .{});
-
         const self: *Session = @fieldParentPtr("output_manager_apply_event", listener);
 
-        var ok = true;
-
-        var iter = output_configuration.heads.iterator(.forward);
-        while (iter.next()) |config_head| {
-            const wlr_output = config_head.state.output;
-            var state = wlr.Output.State.init();
-            defer ok = ok and wlr_output.commitState(&state);
-
-            // const monitor: *Monitor = @ptrFromInt(wlr_output.data);
-
-            state.setEnabled(config_head.state.enabled);
-            if (!config_head.state.enabled) continue;
-            if (config_head.state.mode) |mode|
-                state.setMode(mode)
-            else
-                state.setCustomMode(
-                    config_head.state.custom_mode.width,
-                    config_head.state.custom_mode.height,
-                    config_head.state.custom_mode.refresh,
-                );
-
-            // if (monitor.mode.x != config_head.state.x or monitor.mode.y != config_head.state.y)
-            // state.layoutMove(config_head.state.x, config_head.state.y);
-        }
-
-        if (ok)
-            output_configuration.sendSucceeded()
-        else
-            output_configuration.sendFailed();
-
-        output_configuration.destroy();
-
-        self.updateMons() catch |err| {
-            std.log.err("failed to init client {}", .{err});
-        };
+        self.outputManagerApply(false, output_configuration);
     }
 
     pub fn xwayland_ready(listener: *wl.Listener(void)) void {
@@ -212,6 +181,48 @@ pub fn deinit(self: *Session) void {
     const wayland_data = self.wayland_data.?;
 
     wayland_data.xwayland.destroy();
+}
+
+fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.OutputConfigurationV1) void {
+    std.log.info("output manager apply test: {}", .{is_test});
+
+    var ok = true;
+
+    var iter = output_configuration.heads.iterator(.forward);
+    while (iter.next()) |config_head| {
+        const wlr_output = config_head.state.output;
+        const monitor: *Monitor = @ptrFromInt(wlr_output.data);
+
+        defer if (is_test) {
+            ok = ok and wlr_output.testState(&monitor.state);
+        } else {
+            ok = ok and wlr_output.commitState(&monitor.state);
+        };
+
+        monitor.state.setEnabled(config_head.state.enabled);
+        if (!config_head.state.enabled) continue;
+        if (config_head.state.mode) |mode|
+            monitor.state.setMode(mode)
+        else
+            monitor.state.setCustomMode(
+                config_head.state.custom_mode.width,
+                config_head.state.custom_mode.height,
+                config_head.state.custom_mode.refresh,
+            );
+
+        if (monitor.mode.x != config_head.state.x or monitor.mode.y != config_head.state.y)
+            _ = monitor.session.wayland_data.?.output_layout.add(monitor.output, config_head.state.x, config_head.state.y) catch {};
+
+        monitor.state.setTransform(config_head.state.transform);
+        monitor.state.setScale(config_head.state.scale);
+        monitor.state.setAdaptiveSyncEnabled(config_head.state.adaptive_sync_enabled);
+    }
+
+    output_configuration.destroy();
+
+    self.updateMons() catch |err| {
+        std.log.err("FAILED TO UPDATE MONS {}", .{err});
+    };
 }
 
 fn newLayerSurfaceClient(self: *Session, surface: *wlr.LayerSurfaceV1) !void {
@@ -383,7 +394,9 @@ pub fn launch(self: *Session) SessionError!void {
     const layers = std.EnumArray(Layer, *wlr.SceneTree).init(.{
         .LyrBg = try scene.tree.createSceneTree(),
         .LyrBottom = try scene.tree.createSceneTree(),
+        .LyrTileShadows = try scene.tree.createSceneTree(),
         .LyrTile = try scene.tree.createSceneTree(),
+        .LyrFloatShadows = try scene.tree.createSceneTree(),
         .LyrFloat = try scene.tree.createSceneTree(),
         .LyrFS = try scene.tree.createSceneTree(),
         .LyrTop = try scene.tree.createSceneTree(),
@@ -442,6 +455,7 @@ pub fn launch(self: *Session) SessionError!void {
 
     const output_manager = try wlr.OutputManagerV1.create(wl_server);
     output_manager.events.apply.add(&self.output_manager_apply_event);
+    output_manager.events.@"test".add(&self.output_manager_test_event);
 
     var buf: [11]u8 = undefined;
     const socket = try wl_server.addSocketAuto(&buf);
@@ -489,6 +503,9 @@ pub fn launch(self: *Session) SessionError!void {
 
         try self.config.event(.startup);
 
+        self.selmon = self.getObjectsAt(self.input.cursor.x, self.input.cursor.y).monitor;
+        self.input.cursor.setXcursor(self.input.xcursor_manager, "default");
+
         data.server.run();
     } else return error.SessionNotSetup;
 }
@@ -501,7 +518,8 @@ fn updateMons(self: *Session) !void {
     {
         var iter = self.monitors.iterator(.forward);
         while (iter.next()) |monitor| {
-            if (monitor.output.enabled) continue;
+            if (monitor.output.enabled)
+                continue;
 
             const config_head = try wlr.OutputConfigurationV1.Head.create(config, monitor.output);
             config_head.state.enabled = false;
@@ -509,32 +527,34 @@ fn updateMons(self: *Session) !void {
             self.wayland_data.?.output_layout.remove(monitor.output);
             try monitor.close();
 
-            monitor.window = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
-            monitor.mode = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            // monitor.window = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            // monitor.mode = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
         }
     }
 
     {
         var iter = self.monitors.iterator(.forward);
         while (iter.next()) |monitor| {
-            if (monitor.output.enabled and self.wayland_data.?.output_layout.get(monitor.output) == null)
+            if (monitor.output.enabled and
+                self.wayland_data.?.output_layout.get(monitor.output) == null)
                 _ = try self.wayland_data.?.output_layout.addAuto(monitor.output);
         }
     }
 
     var sgeom: wlr.Box = undefined;
-
     self.wayland_data.?.output_layout.getBox(null, &sgeom);
 
     {
         var iter = self.monitors.iterator(.forward);
         while (iter.next()) |monitor| {
-            if (!monitor.output.enabled) continue;
+            if (!monitor.output.enabled)
+                continue;
 
             const config_head = try wlr.OutputConfigurationV1.Head.create(config, monitor.output);
 
             self.wayland_data.?.output_layout.getBox(monitor.output, &monitor.mode);
-            self.wayland_data.?.output_layout.getBox(monitor.output, &monitor.window);
+            monitor.window = monitor.mode;
+
             monitor.scene_output.setPosition(monitor.mode.x, monitor.mode.y);
 
             // if (monitor.lock_surface) |lock_surface| {
@@ -545,6 +565,9 @@ fn updateMons(self: *Session) !void {
 
             monitor.arrangeLayers();
             monitor.arrangeClients();
+
+            // if ((c = focustop(m)) && c->isfullscreen)
+            // resize(c, m->m, 0);
 
             config_head.state.enabled = true;
             config_head.state.mode = monitor.output.current_mode;
@@ -558,16 +581,21 @@ fn updateMons(self: *Session) !void {
             var iter = self.clients.iterator(.forward);
             while (iter.next()) |client| {
                 if (client.monitor == null and client.isMapped()) {
-                    try client.setMonitor(selected, null);
+                    try client.setMonitor(selected);
                 }
             }
-        }
 
-        // if (selected.lock_surface) |lock_surface|
-        // client.notifyEnter(lock_surface.surface, self.input.seat.getKeyboard());
+            if (selected.focusedClient()) |client|
+                try self.focusClient(client, false)
+            else
+                self.focusClear();
+
+            // if (selected.lock_surface) |lock_surface|
+            // client.notifyEnter(lock_surface.surface, self.input.seat.getKeyboard());
+        }
     }
 
-    std.log.info("set config", .{});
+    self.input.cursor.move(null, 0, 0);
 
     self.wayland_data.?.output_manager.setConfiguration(config);
 }
@@ -637,42 +665,60 @@ pub fn quit(self: *Session) void {
     self.wayland_data.?.server.terminate();
 }
 
-pub fn focus(self: *Session, target_client: ?*Client, lift: bool) !void {
+pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
     const input = self.input;
+
+    if (input.locked)
+        return;
+
     const old_focus = input.seat.keyboard_state.focused_surface;
+
+    if (lift)
+        client.scene.node.raiseToTop();
+
+    if (client.getSurface() == old_focus)
+        return;
+
+    client.focus_link.remove();
+    self.focus_clients.prepend(client);
+
+    self.selmon = client.monitor;
+    if (client.surface == .X11) {
+        client.surface.X11.restack(null, .above);
+    }
+    // client_restack_surface(client.?);
+
+    //TODO: color
+
+    if (old_focus != null and (client.getSurface() != old_focus)) {
+        if (old_focus.? == self.exclusive_focus)
+            return;
+
+        const old_client: ?*Client = self.getClient(old_focus.?);
+        if (old_client) |old|
+            old.activateSurface(false);
+    }
+
+    try self.input.motionNotify(0, null, 0, 0, 0, 0);
+
+    client.notifyEnter(input.seat, input.seat.getKeyboard());
+    client.activateSurface(true);
+}
+
+pub fn focusClear(self: *Session) void {
+    const input = self.input;
 
     if (input.locked) return;
 
-    const client = target_client;
+    const old_focus = input.seat.keyboard_state.focused_surface;
 
-    if (client) |existing| {
-        if (lift)
-            existing.scene.node.raiseToTop();
-
-        if (existing.getSurface() == old_focus)
-            return;
-
-        existing.focus_link.remove();
-        self.focus_clients.prepend(existing);
-
-        self.selmon = existing.monitor;
-        // client_restack_surface(client.?);
-
-        //TODO: color
+    if (old_focus) |old| {
+        const old_client: ?*Client = self.getClient(old);
+        if (old_client) |old_focus_client|
+            old_focus_client.activateSurface(false);
     }
 
-    if (old_focus != null and (client == null or client.?.getSurface() != old_focus)) {
-        // std.log.warn("TODO: focus client internal {*}", .{target_client});
-    }
-
-    if (client) |existing| {
-        try self.input.motionNotify(0, null, 0, 0, 0, 0);
-
-        existing.notifyEnter(input.seat, input.seat.getKeyboard());
-        existing.activateSurface(true);
-    } else {
-        self.input.seat.keyboardNotifyClearFocus();
-    }
+    self.input.seat.keyboardNotifyClearFocus();
 }
 
 pub const ObjectData = struct {

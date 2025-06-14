@@ -19,8 +19,8 @@ const BudlandError = Session.SessionError || Config.ConfigError;
 
 pub fn main() BudlandError!void {
     // just a leak check for debugging
-    defer if (gpa.deinit() == .ok)
-        std.log.debug("no leaks! :)", .{});
+    // defer if (gpa.deinit() == .ok)
+    //     std.log.debug("no leaks! :)", .{});
 
     var config: Config = .init(allocator);
     defer config.deinit();

@@ -19,6 +19,7 @@ pub fn build(b: *std.Build) void {
     const scanner = Scanner.create(b, .{});
     scanner.addSystemProtocol("stable/xdg-shell/xdg-shell.xml");
     scanner.addSystemProtocol("staging/ext-session-lock/ext-session-lock-v1.xml");
+    scanner.addSystemProtocol("staging/cursor-shape/cursor-shape-v1.xml");
     scanner.addSystemProtocol("unstable/xdg-decoration/xdg-decoration-unstable-v1.xml");
     scanner.addSystemProtocol("unstable/tablet/tablet-unstable-v2.xml");
     scanner.addCustomProtocol(b.path("protocol/wlr-layer-shell-unstable-v1.xml"));
@@ -34,6 +35,7 @@ pub fn build(b: *std.Build) void {
     scanner.generate("wl_output", 4);
     scanner.generate("wl_seat", 7);
     scanner.generate("wl_data_device_manager", 3);
+    scanner.generate("wp_cursor_shape_manager_v1", 2);
     scanner.generate("ext_session_lock_manager_v1", 1);
 
     scanner.generate("zxdg_decoration_manager_v1", 1);
@@ -46,6 +48,7 @@ pub fn build(b: *std.Build) void {
     const xkbcommon = b.dependency("xkbcommon", .{}).module("xkbcommon");
     const pixman = b.dependency("pixman", .{}).module("pixman");
     const wlroots = b.dependency("wlroots", .{}).module("wlroots");
+    const cairo = b.dependency("cairo", .{}).module("cairo");
 
     wlroots.addImport("wayland", wayland);
     wlroots.addImport("xkbcommon", xkbcommon);
@@ -69,6 +72,8 @@ pub fn build(b: *std.Build) void {
     budwm.root_module.addImport("wayland", wayland);
     budwm.root_module.addImport("xkbcommon", xkbcommon);
     budwm.root_module.addImport("wlroots", wlroots);
+    budwm.root_module.addImport("cairo", cairo);
+    budwm.root_module.addImport("pixman", pixman);
 
     budwm.linkSystemLibrary("wayland-server");
     budwm.linkSystemLibrary("xkbcommon");

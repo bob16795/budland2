@@ -16,6 +16,18 @@ pub const ConfigError = error{
     Unimplemented,
 };
 
+pub inline fn parseOption(
+    comptime T: type,
+    input: []const u8,
+    table: []const struct { input: []const u8, value: T },
+) !T {
+    for (table) |item|
+        if (std.mem.eql(u8, input, item.input))
+            return item.value;
+
+    return error.BadOperationInput;
+}
+
 fn ConfigLookup(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -36,29 +48,77 @@ fn ConfigLookup(comptime T: type) type {
             self.overrides.deinit();
         }
 
+        pub fn getOver(self: *Self, name: []const u8, default: T) T {
+            if (self.overrides.get(name)) |override| {
+                var result = override;
+
+                const t = @typeInfo(T);
+
+                inline for (t.@"struct".fields) |field| {
+                    if (@typeInfo(field.type) == .optional) {
+                        if (@field(result, field.name) == null)
+                            @field(result, field.name) = @field(default, field.name);
+                    }
+                }
+
+                return result;
+            } else return default;
+        }
+
+        pub fn get(self: *Self, name: []const u8) T {
+            if (self.overrides.get(name)) |override| {
+                var result = override;
+
+                inline for (@typeInfo(T).@"struct".fields) |field| {
+                    if (@typeInfo(field.type) == .optional) {
+                        if (@field(result, field.name) == null)
+                            @field(result, field.name) = @field(self.default, field.name);
+                    }
+                }
+
+                return result;
+            } else return self.default;
+        }
+
         pub fn add(self: *Self, in_name: ?[]const u8, value: T) !void {
             if (in_name) |name| {
-                if (self.overrides.get(name)) |current| {
-                    _ = current;
-                    std.log.warn("TODO: override current", .{});
-
-                    return error.Unimplemented;
+                if (self.overrides.getPtr(name)) |current| {
+                    inline for (@typeInfo(T).@"struct".fields) |field| {
+                        if (@typeInfo(field.type) == .optional) {
+                            if (@field(value, field.name)) |field_value|
+                                @field(current, field.name) = field_value;
+                        }
+                    }
                 } else {
                     const clone = try self.allocator.dupe(u8, name);
 
                     try self.overrides.put(clone, value);
                 }
             } else {
-                std.log.warn("TODO: override default", .{});
-
-                return error.Unimplemented;
+                inline for (@typeInfo(T).@"struct".fields) |field| {
+                    if (@typeInfo(field.type) == .optional) {
+                        if (@field(value, field.name)) |field_value|
+                            @field(self.default, field.name) = field_value;
+                    }
+                }
             }
         }
     };
 }
 
+const ClientRule = struct {
+    icon: ?[*:0]const u8 = "?",
+    tag: ?u32 = null,
+    container: ?u8 = 0,
+    center: ?bool = true,
+    floating: ?bool = false,
+    fullscreen: ?bool = false,
+    border: ?i32 = 0,
+    label: ?[*:0]const u8 = null,
+};
+
 const MonitorRule = struct {
-    scale: ?f32 = 1.0,
+    scale: ?f32 = 1.5,
     transform: ?wl.Output.Transform = .normal,
     x: ?i32 = 0,
     y: ?i32 = 0,
@@ -99,7 +159,7 @@ const Container = struct {
 
     children: []*const Container,
 
-    pub fn has(self: *const Container, idx: u32) bool {
+    pub fn has(self: *const Container, idx: u8) bool {
         if (self.id == idx)
             return true;
 
@@ -111,8 +171,21 @@ const Container = struct {
         return false;
     }
 
+    pub fn childrenUsed(self: *const Container, usage: []bool) usize {
+        if (self.children.len == 0)
+            return if (usage[self.id]) 1 else 0;
+
+        var result: usize = 0;
+        for (self.children) |child| {
+            result += if (usage[child.id]) 1 else 0;
+        }
+
+        return result;
+    }
+
     pub fn used(self: *const Container, usage: []bool) usize {
-        if (self.children.len == 0) return @intFromBool(usage[self.id]);
+        if (self.children.len == 0)
+            return if (usage[self.id]) 1 else 0;
 
         var result: usize = 0;
         for (self.children) |child| {
@@ -122,28 +195,41 @@ const Container = struct {
         return result;
     }
 
-    pub fn getSize(self: *const Container, idx: u32, bounds: wlr.Box, usage: []bool) ?wlr.Box {
+    pub fn getSize(self: *const Container, idx: u8, bounds: wlr.Box, usage: []bool) ?wlr.Box {
         if (!self.has(idx))
             return null;
 
-        if (self.used(usage) == 1) {
-            const screen_x: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_min);
-            const screen_y: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_min);
-            const screen_x_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_max);
-            const screen_y_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_max);
-            const screen_w = screen_x_max - screen_x;
-            const screen_h = screen_y_max - screen_y;
+        const screen_x: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_min);
+        const screen_y: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_min);
+        const screen_x_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_max);
+        const screen_y_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_max);
+        const screen_w = screen_x_max - screen_x;
+        const screen_h = screen_y_max - screen_y;
 
-            return .{
-                .x = screen_x + bounds.x,
-                .y = screen_y + bounds.y,
-                .width = screen_w,
-                .height = screen_h,
-            };
+        const result: wlr.Box = .{
+            .x = screen_x + bounds.x,
+            .y = screen_y + bounds.y,
+            .width = screen_w,
+            .height = screen_h,
+        };
+
+        if (self.used(usage) == 1) {
+            return result;
+        }
+
+        if (self.childrenUsed(usage) == 1) {
+            for (self.children) |child| {
+                if (child.has(idx)) {
+                    for (child.children) |subchild| {
+                        if (subchild.getSize(idx, bounds, usage)) |new_result|
+                            return new_result;
+                    }
+                }
+            }
         } else {
             for (self.children) |child| {
-                if (child.getSize(idx, bounds, usage)) |result|
-                    return result;
+                if (child.getSize(idx, result, usage)) |new_result|
+                    return new_result;
             }
         }
 
@@ -158,39 +244,46 @@ const Layout = struct {
     gaps_inner: i32,
     gaps_outer: i32,
 
-    pub fn getSize(self: *const Layout, idx: u32, bounds: wlr.Box, usage: []bool) wlr.Box {
+    pub fn getSize(self: *const Layout, idx: u8, bounds: wlr.Box, border: i32, usage: []bool) wlr.Box {
         const new_bounds: wlr.Box = .{
             .x = bounds.x + self.gaps_outer,
             .y = bounds.y + self.gaps_outer,
-            .width = bounds.width - self.gaps_outer * 2,
-            .height = bounds.height - self.gaps_outer * 2,
+            .width = bounds.width - self.gaps_outer * 2 - border,
+            .height = bounds.height - self.gaps_outer * 2 - border,
         };
 
         const result = self.container.getSize(idx, new_bounds, usage) orelse new_bounds;
 
-        // std.log.info("resize, {}", .{result});
-
         return .{
             .x = result.x + self.gaps_inner,
             .y = result.y + self.gaps_inner,
-            .width = result.width - self.gaps_inner * 2,
-            .height = result.height - self.gaps_inner * 2,
+            .width = result.width - self.gaps_inner * 2 + border,
+            .height = result.height - self.gaps_inner * 2 + border,
         };
     }
 };
 
 allocator: std.mem.Allocator,
 tags: std.ArrayList([]const u8),
-containers: std.ArrayList(Container),
+containers: std.ArrayList(*Container),
 layouts: std.ArrayList(Layout),
 
 colors: [2][3][4]f32,
 monitor_rules: ConfigLookup(MonitorRule),
+client_title_rules: ConfigLookup(ClientRule),
+client_class_rules: ConfigLookup(ClientRule),
 auto_commands: std.EnumArray(AutoCondition, std.ArrayList(Operation)),
 binds: std.ArrayList(BindData),
 mouse_binds: std.ArrayList(MouseBindData),
 wayland_display: []const u8,
 xwayland_display: []const u8,
+font: [*:0]const u8 = "monospace",
+font_size: i32 = 14,
+title_pad: i32 = 3,
+
+pub fn getTitleHeight(self: *Config) i32 {
+    return self.font_size + 2 * self.title_pad;
+}
 
 const OperationKind = enum {
     none,
@@ -217,6 +310,7 @@ const OperationKind = enum {
     monitor_rule,
     default_rule,
     client_rule,
+    set_font,
     exec,
     auto,
     bind,
@@ -226,7 +320,7 @@ const OperationKind = enum {
 const AutoCondition = enum { startup };
 const ColorLayer = enum { border, background, foreground };
 const MouseAction = enum { move, resize };
-const RuleKind = enum { icon, tag, container, center, floating, fullscreen, label };
+const RuleKind = enum { icon, tag, container, center, floating, border, fullscreen, label };
 const ClientProp = enum { title, class };
 
 const OperationString = struct {
@@ -264,6 +358,11 @@ const Operation = union(OperationKind) {
 
         child_a: []const u8,
         child_b: []const u8,
+
+        top: f32,
+        bottom: f32,
+        left: f32,
+        right: f32,
     },
     focus_container: OperationString,
     send_container: OperationString,
@@ -313,6 +412,10 @@ const Operation = union(OperationKind) {
 
         key: RuleKind,
         value: []const u8,
+    },
+
+    set_font: struct {
+        font: [*:0]const u8,
     },
 
     exec: struct {
@@ -404,6 +507,10 @@ const Operation = union(OperationKind) {
                     .name = try create_multi_container.allocator.dupe(u8, create_multi_container.name),
                     .child_a = try create_multi_container.allocator.dupe(u8, create_multi_container.child_a),
                     .child_b = try create_multi_container.allocator.dupe(u8, create_multi_container.child_b),
+                    .top = create_multi_container.top,
+                    .bottom = create_multi_container.bottom,
+                    .left = create_multi_container.left,
+                    .right = create_multi_container.right,
                 } };
             },
             .create_layout => |create_layout| {
@@ -484,18 +591,6 @@ const Operation = union(OperationKind) {
         }
     }
 
-    pub inline fn parseOption(
-        comptime T: type,
-        input: []const u8,
-        table: []const struct { input: []const u8, value: T },
-    ) !T {
-        for (table) |item|
-            if (std.mem.eql(u8, input, item.input))
-                return item.value;
-
-        return error.BadOperationInput;
-    }
-
     pub fn parse(self: *Config, input_line: []const u8) ConfigError!Operation {
         if (std.mem.indexOf(u8, input_line, "#")) |hash_idx|
             return parse(self, input_line[0..hash_idx]);
@@ -547,7 +642,7 @@ const Operation = union(OperationKind) {
             errdefer if (name) |name_value|
                 self.allocator.free(name_value);
 
-            const scale = 1.0;
+            const scale = 1.5;
             const transform: wl.Output.Transform = .normal;
 
             const x = std.fmt.parseInt(i32, x_text, 0) catch return error.BadOperationInput;
@@ -645,6 +740,7 @@ const Operation = union(OperationKind) {
                     .{ .input = "center", .value = .center },
                     .{ .input = "floating", .value = .floating },
                     .{ .input = "fullscreen", .value = .fullscreen },
+                    .{ .input = "border", .value = .border },
                     .{ .input = "label", .value = .label },
                 });
 
@@ -678,6 +774,7 @@ const Operation = union(OperationKind) {
                     .{ .input = "center", .value = .center },
                     .{ .input = "floating", .value = .floating },
                     .{ .input = "fullscreen", .value = .fullscreen },
+                    .{ .input = "border", .value = .border },
                     .{ .input = "label", .value = .label },
                 });
 
@@ -782,10 +879,10 @@ const Operation = union(OperationKind) {
             if (std.mem.eql(u8, target_text, "container")) {
                 const container_kind = split.next() orelse return error.BadOperationInput;
                 if (std.mem.eql(u8, container_kind, "client")) {
-                    const top_text = split.next() orelse return error.BadOperationInput;
                     const left_text = split.next() orelse return error.BadOperationInput;
-                    const bottom_text = split.next() orelse return error.BadOperationInput;
+                    const top_text = split.next() orelse return error.BadOperationInput;
                     const right_text = split.next() orelse return error.BadOperationInput;
+                    const bottom_text = split.next() orelse return error.BadOperationInput;
 
                     const top = std.fmt.parseFloat(f32, top_text) catch return error.BadOperationInput;
                     const left = std.fmt.parseFloat(f32, left_text) catch return error.BadOperationInput;
@@ -796,6 +893,7 @@ const Operation = union(OperationKind) {
                         .allocator = self.allocator,
 
                         .name = name,
+
                         .top = top,
                         .left = left,
                         .bottom = bottom,
@@ -804,12 +902,21 @@ const Operation = union(OperationKind) {
                 } else if (std.mem.eql(u8, container_kind, "multi")) {
                     const child_a_text = split.next() orelse return error.BadOperationInput;
                     const child_b_text = split.next() orelse return error.BadOperationInput;
+                    const left_text = split.next() orelse return error.BadOperationInput;
+                    const top_text = split.next() orelse return error.BadOperationInput;
+                    const right_text = split.next() orelse return error.BadOperationInput;
+                    const bottom_text = split.next() orelse return error.BadOperationInput;
 
                     const child_a = try self.allocator.dupe(u8, child_a_text);
                     errdefer self.allocator.free(child_a);
 
                     const child_b = try self.allocator.dupe(u8, child_b_text);
                     errdefer self.allocator.free(child_b);
+
+                    const top = std.fmt.parseFloat(f32, top_text) catch return error.BadOperationInput;
+                    const left = std.fmt.parseFloat(f32, left_text) catch return error.BadOperationInput;
+                    const bottom = std.fmt.parseFloat(f32, bottom_text) catch return error.BadOperationInput;
+                    const right = std.fmt.parseFloat(f32, right_text) catch return error.BadOperationInput;
 
                     return .{ .create_multi_container = .{
                         .allocator = self.allocator,
@@ -818,6 +925,11 @@ const Operation = union(OperationKind) {
 
                         .child_a = child_a,
                         .child_b = child_b,
+
+                        .top = top,
+                        .left = left,
+                        .bottom = bottom,
+                        .right = right,
                     } };
                 } else return error.BadOperationInput;
             } else if (std.mem.eql(u8, target_text, "layout")) {
@@ -842,6 +954,15 @@ const Operation = union(OperationKind) {
                 } };
             } else return try parseOption(Operation, target_text, &.{
                 .{ .input = "tag", .value = .{ .create_tag = .{ .value = name, .allocator = self.allocator } } },
+            });
+        } else if (std.mem.eql(u8, first, "set")) {
+            const target_text = split.next() orelse return error.BadOperationInput;
+            const value_text = split.rest();
+
+            return try parseOption(Operation, target_text, &.{
+                .{ .input = "font", .value = .{ .set_font = .{
+                    .font = try self.allocator.dupeZ(u8, value_text),
+                } } },
             });
         } else if (std.mem.eql(u8, first, "focus")) {
             const target_text = split.next() orelse return error.BadOperationInput;
@@ -966,13 +1087,27 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                     std.log.info("focus {s} {}", .{ tag, vis });
 
                     if (vis) {
-                        monitor.tag = idx;
+                        monitor.setTag(idx);
 
                         break;
                     }
                 }
+            }
+        },
+        .send_container => |send_container| {
+            if (active_client) |active| {
+                for (self.containers.items) |container| {
+                    const vis = std.mem.eql(u8, container.name, send_container.value);
 
-                monitor.arrangeClients();
+                    if (vis) {
+                        std.log.info("send {*} {s}", .{ active, send_container.value });
+
+                        active.setContainer(container.id);
+                        active.setFloating(false);
+
+                        break;
+                    }
+                }
             }
         },
         .send_tag => |create_tag| {
@@ -983,19 +1118,16 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                     if (vis) {
                         std.log.info("send {*} {}", .{ active, idx });
 
-                        active.tag = idx;
+                        active.setTag(idx);
 
                         break;
                     }
                 }
-
-                if ((session orelse return).selmon) |monitor| {
-                    monitor.arrangeClients();
-                }
             }
         },
         .create_client_container => |client_container| {
-            try self.containers.append(.{
+            const tmp = try self.allocator.create(Container);
+            tmp.* = .{
                 .name = try self.allocator.dupe(u8, client_container.name),
                 .id = @intCast(self.containers.items.len),
 
@@ -1005,13 +1137,15 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 .y_max = client_container.bottom,
 
                 .children = &.{},
-            });
+            };
+
+            try self.containers.append(tmp);
         },
         .create_multi_container => |multi_container| {
             var a: ?*const Container = null;
             var b: ?*const Container = null;
 
-            for (self.containers.items) |*item| {
+            for (self.containers.items) |item| {
                 if (std.mem.eql(u8, item.name, multi_container.child_a))
                     a = item;
                 if (std.mem.eql(u8, item.name, multi_container.child_b))
@@ -1022,22 +1156,25 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
             if (b == null) return error.BadOperationInput;
             if (a == b) return error.BadOperationInput;
 
-            try self.containers.append(.{
+            const tmp = try self.allocator.create(Container);
+            tmp.* = .{
                 .name = try self.allocator.dupe(u8, multi_container.name),
                 .id = @intCast(self.containers.items.len),
 
-                .x_min = @min(a.?.x_min, b.?.x_min),
-                .y_min = @min(a.?.y_min, b.?.y_min),
-                .x_max = @min(a.?.x_max, b.?.x_max),
-                .y_max = @min(a.?.y_max, b.?.y_max),
+                .x_min = multi_container.left,
+                .y_min = multi_container.top,
+                .x_max = multi_container.right,
+                .y_max = multi_container.bottom,
 
                 .children = try self.allocator.dupe(*const Container, &.{ a.?, b.? }),
-            });
+            };
+
+            try self.containers.append(tmp);
         },
         .create_layout => |create_layout| {
             var container: ?*Container = null;
 
-            for (self.containers.items) |*item| {
+            for (self.containers.items) |item| {
                 if (std.mem.eql(u8, item.name, create_layout.root))
                     container = item;
             }
@@ -1055,11 +1192,112 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         },
         .toggle_floating => {
             if (active_client) |active| {
-                active.floating = !active.floating;
+                active.setFloating(!active.floating);
 
                 if (active.monitor) |monitor|
                     monitor.arrangeClients();
             }
+        },
+        .default_rule => |default_rule| {
+            var rule: ClientRule = std.mem.zeroes(ClientRule);
+            switch (default_rule.key) {
+                .label => {
+                    rule.label = try self.allocator.dupeZ(u8, default_rule.value);
+                },
+                .icon => {
+                    rule.icon = try self.allocator.dupeZ(u8, default_rule.value);
+                },
+                .container => {
+                    for (self.containers.items) |item| {
+                        if (std.mem.eql(u8, item.name, default_rule.value))
+                            rule.container = item.id;
+                    }
+                    if (rule.container == null) return error.BadOperationInput;
+                },
+                .border => {
+                    rule.border = std.fmt.parseInt(i32, default_rule.value, 10) catch null;
+                },
+                .floating => {
+                    rule.floating = try parseOption(bool, default_rule.value, &.{
+                        .{ .input = "true", .value = true },
+                        .{ .input = "false", .value = false },
+                        .{ .input = "True", .value = true },
+                        .{ .input = "False", .value = false },
+                    });
+                },
+                else => {
+                    std.log.warn("TODO default rule: {} {s}", .{ default_rule.key, default_rule.value });
+                    return error.Unimplemented;
+                },
+            }
+
+            try self.client_title_rules.add(null, rule);
+            try self.client_class_rules.add(null, rule);
+        },
+        .client_rule => |client_rule| {
+            const list = switch (client_rule.prop) {
+                .title => &self.client_title_rules,
+                .class => &self.client_class_rules,
+            };
+
+            var rule: ClientRule = std.mem.zeroes(ClientRule);
+            switch (client_rule.key) {
+                .label => {
+                    rule.label = try self.allocator.dupeZ(u8, client_rule.value);
+                },
+                .icon => {
+                    rule.icon = try self.allocator.dupeZ(u8, client_rule.value);
+                },
+                .container => {
+                    for (self.containers.items) |item| {
+                        if (std.mem.eql(u8, item.name, client_rule.value))
+                            rule.container = item.id;
+                    }
+                    if (rule.container == null) return error.BadOperationInput;
+                },
+                .border => {
+                    rule.border = std.fmt.parseInt(i32, client_rule.value, 10) catch null;
+                },
+                .floating => {
+                    rule.floating = try parseOption(bool, client_rule.value, &.{
+                        .{ .input = "true", .value = true },
+                        .{ .input = "false", .value = false },
+                        .{ .input = "True", .value = true },
+                        .{ .input = "False", .value = false },
+                    });
+                },
+                else => {
+                    std.log.warn("TODO rule: {} {s}", .{ client_rule.key, client_rule.value });
+                    return error.Unimplemented;
+                },
+            }
+
+            try list.add(client_rule.prop_value, rule);
+        },
+        .prev_layout => {
+            if ((session orelse return).selmon) |monitor| {
+                if (monitor.layout == 0)
+                    monitor.layout = self.layouts.items.len;
+
+                monitor.layout -= 1;
+
+                monitor.arrangeClients();
+            }
+        },
+        .next_layout => {
+            if ((session orelse return).selmon) |monitor| {
+                monitor.layout = (monitor.layout + 1) % self.layouts.items.len;
+
+                monitor.arrangeClients();
+            }
+        },
+        .set_color => |set_color| {
+            const active_id: usize = if (set_color.active) 1 else 0;
+            const layer_id: usize = @intFromEnum(set_color.layer);
+            self.colors[active_id][layer_id] = set_color.color;
+        },
+        .set_font => |set_font| {
+            self.font = set_font.font;
         },
         else => {
             std.log.warn("TODO: apply setting {s}", .{@tagName(operation)});
@@ -1080,6 +1318,8 @@ pub fn init(allocator: std.mem.Allocator) Config {
             .{ .{ 1, 0, 0, 1 }, .{ 1, 0, 0, 1 }, .{ 1, 0, 0, 1 } },
         },
         .monitor_rules = .init(allocator),
+        .client_title_rules = .init(allocator),
+        .client_class_rules = .init(allocator),
         .auto_commands = .initFill(.init(allocator)),
         .binds = .init(allocator),
         .mouse_binds = .init(allocator),
@@ -1124,9 +1364,9 @@ pub fn sourcePath(self: *Config, path: []const u8) ConfigError!void {
         if (Operation.parse(self, line)) |operation| {
             defer operation.deinit();
             self.apply(operation, null) catch |err| {
+                std.log.warn("TODO: config command {s} {!}", .{ line, err });
                 if (err != error.Unimplemented)
                     return error.BadOperationInput;
-                // std.log.warn("TODO: config command {s} {!}", .{ line, err });
             };
         } else |err| {
             std.log.warn("Can't parse config command {s} {!}", .{ line, err });
