@@ -245,7 +245,6 @@ pub fn arrangeClients(self: *Monitor) void {
 
     // TODO: activate fullscreen
 
-    const config = self.session.config;
     self.layout_symbol = config.layouts.items[self.layout].name;
 
     self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
