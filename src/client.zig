@@ -133,7 +133,7 @@ floating: bool = true,
 tag: usize = 0,
 border: i32 = 0,
 
-// TODO: config
+// TODO: move this to config
 const SHADOW_SIZE = 10;
 
 const Listeners = struct {
@@ -447,10 +447,6 @@ pub fn updateFrame(self: *Client) !void {
 
     self.frame.buffer_scene.node.setEnabled(true);
     self.frame.buffer_scene.setDestSize(total_width, total_height);
-    // self.frame.buffer_scene.setDestSize(
-    //     self.frame.title_buffer.unscaled_width,
-    //     self.frame.title_buffer.unscaled_height,
-    // );
 }
 
 pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
@@ -529,6 +525,7 @@ pub fn init(self: *Client, session: *Session, target: ClientSurface) !void {
                 .X11 = surface,
             };
 
+            // used for reference when comparing to xcb names
             // https://github.com/swaywm/wlroots/blob/0855cdacb2eeeff35849e2e9c4db0aa996d78d10/include/wlr/xwayland.h#L143
 
             surface.events.associate.add(&self.events.x11.map_event);
@@ -637,9 +634,10 @@ pub fn applyRules(self: *Client) !void {
     if (rule.icon) |icon| self.setIcon(icon);
     if (rule.tag) |tag| self.setTag(tag);
     if (rule.container) |container| self.setContainer(container);
-    // if (rule.center) |center| self.center = center;
     if (rule.border) |border| self.setBorder(border);
     if (rule.floating) |floating| self.setFloating(floating);
+    // TODO: implement these
+    // if (rule.center) |center| self.center = center;
     // if (rule.fullscreen) |fullscreen| self.fullscreen = fullscreen;
     if (rule.label) |label| self.setLabel(label);
 
@@ -720,9 +718,8 @@ pub fn resize(self: *Client, in_target_bounds: ?wlr.Box, force: bool) !void {
         },
     }
 
+    // TODO: why
     _ = force;
-
-    //TODO: frame?
 
     self.resize_serial = self.updateSize();
 
@@ -927,7 +924,7 @@ pub fn unmap(self: *Client) !void {
             if (self.managed) {
                 std.log.warn("TODO: unmap managed x11 windows", .{});
             } else {
-                // TODO: remove exclusive focus
+                // TODO: remove exclusive focus if needed
                 if (self.getSurface() == self.session.input.seat.keyboard_state.focused_surface)
                     try self.session.focusClient(self, true);
             }

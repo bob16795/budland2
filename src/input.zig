@@ -8,7 +8,7 @@ const Client = @import("client.zig");
 
 const Input = @This();
 
-// TODO: config
+// TODO: move to config
 const REPEAT_RATE = 50;
 const REPEAT_DELAY = 300;
 
@@ -228,7 +228,6 @@ pub fn init(self: *Input, session: *Session) !void {
     const cursor_shape_manager = try wlr.CursorShapeManagerV1.create(wayland_data.server, 1);
     cursor_shape_manager.events.request_set_shape.add(&self.events.set_cursor_shape_event);
 
-    // seat stuff
     const seat = try wlr.Seat.create(wayland_data.server, "seat0");
     seat.events.request_set_cursor.add(&self.events.request_set_cursor_event);
 
@@ -307,7 +306,6 @@ pub fn motionNotify(
         self.relative_pointer_manager.sendRelativeMotion(self.seat, time * 1000, dx, dy, dx_unaccel, dy_unaccel);
 
         // TODO: constraints
-        // var iter = self.pointer_constraints.iterator();
 
         self.cursor.move(device, dx, dy);
 
@@ -331,7 +329,7 @@ pub fn motionNotify(
     }
 
     if (self.cursor_mode == .move) {
-        // if (!self.grab_client.isFullscreen())
+        // TODO: not fullscreen
         self.grab_client.resize(.{
             .x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_x,
             .y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_y,
@@ -341,7 +339,7 @@ pub fn motionNotify(
 
         return;
     } else if (self.cursor_mode == .resize) {
-        // if (!self.grab_client.isFullscreen())
+        // TODO: not fullscreen
         self.grab_client.resize(.{
             .x = self.grab_client.bounds.x,
             .y = self.grab_client.bounds.y,
@@ -441,7 +439,6 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                                 @floatFromInt(self.grab_client.bounds.x + self.grab_client.bounds.width),
                                 @floatFromInt(self.grab_client.bounds.y + self.grab_client.bounds.height),
                             );
-                            // c.wlr_cursor_warp_closest(cursor, null, @as(f64, @floatFromInt(grabc.?.geom.x + grabc.?.geom.width)), @as(f64, @floatFromInt(grabc.?.geom.y + grabc.?.geom.height)));
 
                             self.xcursor_image = "bottom_right_corner";
                             if (self.xcursor_manager.getXcursor(self.xcursor_image.?, 1)) |xcursor| {
@@ -457,9 +454,6 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                                 );
                             }
                         },
-                        // else => {
-                        //     std.log.warn("TODO: cursor action {}", .{b.action});
-                        // },
                     }
                     return;
                 }
@@ -566,9 +560,7 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
             try self.keyboards.append(keyboard);
         },
         .pointer => {
-            // const wlr_pointer = device.toPointer();
-            // if (device.isLibInput()) {}
-            // std.log.warn("TODO: cursor lib input", .{});
+            // std.log.warn("TODO: libinput", .{});
 
             self.cursor.attachInputDevice(device);
         },

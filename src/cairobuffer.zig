@@ -108,10 +108,6 @@ pub fn resize(self: *CairoBuffer, width: u16, height: u16, scale: f32) !*CairoBu
     self.base.height = scaled_height;
 
     return self;
-
-    // self.deinit();
-
-    // return CairoBuffer.create(self.allocator, width, height, scale) catch unreachable;
 }
 
 pub fn beginContext(
@@ -136,15 +132,6 @@ pub fn beginContext(
         tmp.flush();
     } else |_| {}
     return self.context;
-
-    // var result: cairo.Context = undefined;
-    // var format: u32 = 0;
-    // var stride: usize = 0;
-
-    // if (self.base.beginDataPtrAccess(0, @ptrCast(&result), &format, &stride))
-    // return result
-    // else
-    // return error.TODO;
 }
 
 pub fn endContext(
@@ -157,7 +144,4 @@ pub fn endContext(
         var tmp = surf;
         tmp.flush();
     } else |_| {}
-
-    // self.base.endDataPtrAccess();
-    // context.destroy();
 }
