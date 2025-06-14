@@ -33,15 +33,17 @@
             .url = "git+https://github.com/ifreund/zig-xkbcommon#87e0910e12af79cbb74a37143c881abea32c96b7",
             .hash = "xkbcommon-0.4.0-dev-VDqIe3a9AQDQa1H4Vh7__mVphznD-7tyNWdnjFgf-9fC",
         },
-        .wayland = .{
-            .path = "../zig-wayland",
-        },
-        .cairo = .{
-            .path = "../zig-cairo",
-        },
         .wlroots = .{
             .url = "git+https://github.com/swaywm/zig-wlroots#cd76b31bc1dfda1190b2ec7652dd60e6a41a30e1",
             .hash = "wlroots-0.18.3-dev-jmOlcrjJAwBYc41YeWLLuKKnFVDmPmtA86BPJ1XX78Uf",
+        },
+        .cairo = .{
+            .url = "git+https://github.com/bob16795/zig-cairo-budland#06c4a83ae432d0d216c2fed385ced704ba57a9aa",
+            .hash = "cairo-0.2.0-20KEkOOAxwEbbKWR6cCAHkROZWzuyTTm5Mecf-43aSBZ",
+        },
+        .wayland = .{
+            .url = "git+https://github.com/bob16795/zig-wayland#b8086b5f9f7d1aa891faee5dea9077f5afb1de3e",
+            .hash = "wayland-0.4.0-dev-lQa1kjXIAQDdp66z4NdKpEYR7QIlXaIh7Ecm5Qz1KeV9",
         },
     },
     .paths = .{""},
