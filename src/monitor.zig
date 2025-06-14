@@ -217,27 +217,6 @@ pub fn arrangeClients(self: *Monitor) void {
         }
     }
 
-    // var done = false;
-    // while (!done) {
-    //     done = true;
-
-    //     outer: for (config.containers.items, 0..) |container, idx| {
-    //         inner: for (container.children) |c| {
-    //             if (!solved[c.id]) {
-    //                 done = false;
-    //                 continue :outer;
-    //             }
-
-    //             if (usage[c.id]) {
-    //                 usage[idx] = true;
-    //                 break :inner;
-    //             }
-    //         }
-
-    //         solved[idx] = true;
-    //     }
-    // }
-
     var iter = self.session.clients.iterator(.forward);
     while (iter.next()) |client| {
         if (client.monitor == self) {
@@ -264,17 +243,10 @@ pub fn arrangeClients(self: *Monitor) void {
     while (iter.next()) |client|
         client.updateFrame() catch {};
 
-    // iter = self.session.clients.iterator(.forward);
-    // if (self.client.container) |container| {
-    //     // TODO: stack
-    // }
-
-    // const client = self.focusedClient();
     // TODO: activate fullscreen
 
-    // const config = self.session.config;
-    // self.layout_symbol = if (self.layout > config.layouts[])
-    self.layout_symbol = "[???]";
+    const config = self.session.config;
+    self.layout_symbol = config.layouts.items[self.layout].name;
 
     self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
 }
