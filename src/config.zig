@@ -217,6 +217,9 @@ const Container = struct {
             return result;
         }
 
+        // TODO: This is a flawed implementation, really the parent container
+        //       should resize the child to completly fill space, but this
+        //       works for now
         if (self.childrenUsed(usage) == 1) {
             for (self.children) |child| {
                 if (child.has(idx)) {
