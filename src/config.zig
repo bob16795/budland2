@@ -854,6 +854,9 @@ const Operation = union(OperationKind) {
                 }
             }
 
+            if (mod.shift and keysym == @as(xkb.Keysym, @enumFromInt(xkb.Keysym.Tab)))
+                keysym = @enumFromInt(xkb.Keysym.ISO_Left_Tab);
+
             const operation = try parse(self, cmd_text);
 
             const bind = try self.allocator.create(BindData);
@@ -1090,7 +1093,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                     std.log.info("focus {s} {}", .{ tag, vis });
 
                     if (vis) {
-                        monitor.setTag(idx);
+                        try monitor.setTag(idx);
 
                         break;
                     }
@@ -1105,8 +1108,8 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                     if (vis) {
                         std.log.info("send {*} {s}", .{ active, send_container.value });
 
-                        active.setContainer(container.id);
-                        active.setFloating(false);
+                        try active.setContainer(container.id);
+                        try active.setFloating(false);
 
                         break;
                     }
@@ -1121,7 +1124,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                     if (vis) {
                         std.log.info("send {*} {}", .{ active, idx });
 
-                        active.setTag(idx);
+                        try active.setTag(idx);
 
                         break;
                     }
@@ -1195,10 +1198,10 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         },
         .toggle_floating => {
             if (active_client) |active| {
-                active.setFloating(!active.floating);
+                try active.setFloating(!active.floating);
 
-                if (active.monitor) |monitor|
-                    monitor.arrangeClients();
+                if (active.monitor) |m|
+                    try m.arrangeClients();
             }
         },
         .default_rule => |default_rule| {
@@ -1284,14 +1287,14 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
 
                 monitor.layout -= 1;
 
-                monitor.arrangeClients();
+                try monitor.arrangeClients();
             }
         },
         .next_layout => {
             if ((session orelse return).selmon) |monitor| {
                 monitor.layout = (monitor.layout + 1) % self.layouts.items.len;
 
-                monitor.arrangeClients();
+                try monitor.arrangeClients();
             }
         },
         .set_color => |set_color| {
@@ -1302,11 +1305,27 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         .set_font => |set_font| {
             self.font = set_font.font;
         },
-        else => {
-            std.log.warn("TODO: apply setting {s}", .{@tagName(operation)});
-
-            return error.Unimplemented;
+        .quit_budland => {
+            if (session) |session_val|
+                session_val.quit();
         },
+        .toggle_fullscreen => {
+            if (active_client) |active| {
+                try active.setFullscreen(!active.fullscreen);
+
+                if (active.monitor) |m|
+                    try m.arrangeClients();
+            }
+        },
+        .next_container => {
+            if (session) |session_val|
+                try session_val.focusStack(.forward);
+        },
+        .prev_container => {
+            if (session) |session_val|
+                try session_val.focusStack(.backward);
+        },
+        else => return error.Unimplemented,
     }
 }
 

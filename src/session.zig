@@ -26,6 +26,8 @@ pub const Layer = enum {
     LyrBlock,
 };
 
+const CycleDir = enum { forward, backward };
+
 pub const SessionError = error{
     ServerCreateFailed,
     BackendCreateFailed,
@@ -563,8 +565,7 @@ fn updateMons(self: *Session) !void {
             //     lock_surface.configure(monitor.mode.width, monitor.mode.height);
             // }
 
-            monitor.arrangeLayers();
-            monitor.arrangeClients();
+            try monitor.arrangeLayers();
 
             // if ((c = focustop(m)) && c->isfullscreen)
             // resize(c, m->m, 0);
@@ -772,4 +773,43 @@ pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
         null;
 
     return result;
+}
+
+pub fn focusStack(self: *Session, dir: CycleDir) !void {
+    const selmon = self.selmon orelse return;
+    const sel = selmon.focusedClient() orelse return;
+
+    if (sel.fullscreen)
+        return;
+
+    const target = switch (dir) {
+        .forward => blk: {
+            const IterType = wl.list.Head(Client, .link).Iterator(.forward);
+            var iter: IterType = .{ .head = &sel.link, .current = &sel.link };
+            while (iter.next()) |client| {
+                if (&client.link == &self.clients.link)
+                    continue;
+                if (selmon.clientVisible(client) and
+                    client.container == sel.container)
+                    break :blk client;
+            }
+
+            return;
+        },
+        .backward => blk: {
+            const IterType = wl.list.Head(Client, .link).Iterator(.reverse);
+            var iter: IterType = .{ .head = &sel.link, .current = &sel.link };
+            while (iter.next()) |client| {
+                if (&client.link == &self.clients.link)
+                    continue;
+                if (selmon.clientVisible(client) and
+                    client.container == sel.container)
+                    break :blk client;
+            }
+
+            return;
+        },
+    };
+
+    try self.focusClient(target, true);
 }

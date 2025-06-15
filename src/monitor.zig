@@ -140,7 +140,7 @@ pub fn close(self: *Monitor) !void {
     std.log.info("TODO: Monitor.close clients move", .{});
 }
 
-pub fn arrangeLayers(self: *Monitor) void {
+pub fn arrangeLayers(self: *Monitor) !void {
     var usable = self.mode;
 
     if (!self.output.enabled) return;
@@ -150,7 +150,7 @@ pub fn arrangeLayers(self: *Monitor) void {
 
     if (!std.mem.eql(u8, std.mem.asBytes(&usable), std.mem.asBytes(&self.window))) {
         self.window = usable;
-        self.arrangeClients();
+        try self.arrangeClients();
     }
 
     for (0..4) |i|
@@ -182,13 +182,13 @@ pub fn focusedClient(self: *Monitor) ?*Client {
     } else null;
 }
 
-pub fn arrangeClients(self: *Monitor) void {
+pub fn arrangeClients(self: *Monitor) !void {
     const config = self.session.config;
 
-    const usage: []bool = config.allocator.alloc(bool, config.containers.items.len) catch unreachable;
+    const usage: []bool = try config.allocator.alloc(bool, config.containers.items.len);
     defer config.allocator.free(usage);
 
-    const solved: []bool = config.allocator.alloc(bool, config.containers.items.len) catch unreachable;
+    const solved: []bool = try config.allocator.alloc(bool, config.containers.items.len);
     defer config.allocator.free(solved);
     for (solved) |*s| s.* = false;
 
@@ -234,20 +234,20 @@ pub fn arrangeClients(self: *Monitor) void {
                         .title;
                 }
 
-                client.resize(new, true) catch {};
+                try client.resize(new);
             }
         }
     }
 
     iter = self.session.clients.iterator(.forward);
     while (iter.next()) |client|
-        client.updateFrame() catch {};
+        try client.updateFrame();
 
     // TODO: activate fullscreen
 
     self.layout_symbol = config.layouts.items[self.layout].name;
 
-    self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
+    try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
 }
 
 fn arrangeLayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) void {
@@ -274,12 +274,12 @@ fn arrangeLayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) v
     }
 }
 
-pub fn setTag(self: *Monitor, tag: usize) void {
+pub fn setTag(self: *Monitor, tag: usize) !void {
     if (self.tag == tag)
         return;
 
     self.tag = tag;
-    self.arrangeClients();
+    try self.arrangeClients();
 }
 
 pub fn deinit(self: *Monitor) void {

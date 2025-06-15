@@ -2,6 +2,7 @@ const wl = @import("wayland").server.wl;
 const wlr = @import("wlroots");
 const std = @import("std");
 const xkb = @import("xkbcommon");
+const cairo = @import("cairo");
 
 const Session = @import("session.zig");
 const Client = @import("client.zig");
@@ -43,6 +44,13 @@ const Keyboard = struct {
     key_event: wl.Listener(*wlr.Keyboard.event.Key) = .init(Listeners.keyboard.key),
     modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Listeners.keyboard.modifiers),
 
+    fn cleanMask(mask: wlr.Keyboard.ModifierMask) wlr.Keyboard.ModifierMask {
+        var result = mask;
+        result.caps = false;
+
+        return mask;
+    }
+
     pub fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
         const wayland_data = self.input.session.wayland_data.?;
 
@@ -57,12 +65,8 @@ const Keyboard = struct {
 
         const config = self.input.session.config;
 
-        if (!self.input.locked and
-            // wayland_data.input_inhibit_mgr.active_inhibitor == null and
-            key_data.state == .pressed)
-        {
+        if (!self.input.locked and key_data.state == .pressed) {
             for (keysyms) |sym| {
-                handled = handled or false;
                 if (@intFromEnum(sym) == xkb.Keysym.Escape and
                     modifier_mask.alt and modifier_mask.shift)
                 {
@@ -71,7 +75,7 @@ const Keyboard = struct {
                 }
 
                 for (config.binds.items) |bind| {
-                    if (bind.mod == modifier_mask and bind.keysym == sym) {
+                    if (cleanMask(bind.mod) == cleanMask(modifier_mask) and bind.keysym == sym) {
                         config.apply(bind.operation, self.input.session) catch {};
                         handled = true;
                     }
@@ -79,18 +83,39 @@ const Keyboard = struct {
             }
         }
 
+        // if (!handled and key_data.state == .pressed) {
+        //     var buffer: [30]u8 = undefined;
+        //     for (keysyms) |keysym| {
+        //         const name_len = keysym.getName(&buffer, buffer.len);
+        //         const name = buffer[0..@intCast(name_len)];
+
+        //         const key_name = try std.mem.concat(self.input.session.config.allocator, u8, &.{
+        //             if (modifier_mask.logo) "Super+" else "",
+        //             if (modifier_mask.ctrl) "Ctrl+" else "",
+        //             if (modifier_mask.alt) "Alt+" else "",
+        //             if (modifier_mask.shift) "Shift+" else "",
+        //             name,
+        //         });
+        //         defer self.input.session.config.allocator.free(key_name);
+
+        //         std.log.info("unhandled key {s}", .{key_name});
+        //     }
+        // }
+
         if (handled and self.keyboard.repeat_info.delay > 0) {
             self.modifier_mask = modifier_mask;
             self.keysyms = keysyms;
             try self.key_repeat_source.timerUpdate(self.keyboard.repeat_info.delay);
         } else {
+            self.keysyms.len = 0;
             try self.key_repeat_source.timerUpdate(0);
         }
 
-        if (!handled) {
-            self.input.seat.setKeyboard(self.keyboard);
-            self.input.seat.keyboardNotifyKey(key_data.time_msec, key_data.keycode, key_data.state);
-        }
+        if (handled)
+            return;
+
+        self.input.seat.setKeyboard(self.keyboard);
+        self.input.seat.keyboardNotifyKey(key_data.time_msec, key_data.keycode, key_data.state);
     }
 
     pub fn modifiers(self: *Keyboard) !void {
@@ -280,7 +305,7 @@ pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbs
 
 const MotionError = error{
     TODO,
-};
+} || cairo.Error;
 
 pub fn motionNotify(
     self: *Input,
@@ -330,22 +355,22 @@ pub fn motionNotify(
 
     if (self.cursor_mode == .move) {
         // TODO: not fullscreen
-        self.grab_client.resize(.{
+        try self.grab_client.resize(.{
             .x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_x,
             .y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_y,
             .width = self.grab_client.bounds.width,
             .height = self.grab_client.bounds.height,
-        }, true) catch return error.TODO;
+        });
 
         return;
     } else if (self.cursor_mode == .resize) {
         // TODO: not fullscreen
-        self.grab_client.resize(.{
+        try self.grab_client.resize(.{
             .x = self.grab_client.bounds.x,
             .y = self.grab_client.bounds.y,
             .width = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x,
             .height = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y,
-        }, true) catch return error.TODO;
+        });
 
         return;
     }
@@ -408,7 +433,7 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                             self.grab_client = objects.client orelse
                                 return;
 
-                            self.grab_client.setFloating(true);
+                            try self.grab_client.setFloating(true);
                             self.cursor_mode = .move;
                             self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x;
                             self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y;
@@ -431,7 +456,7 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                             self.grab_client = objects.client orelse
                                 return;
 
-                            self.grab_client.setFloating(true);
+                            try self.grab_client.setFloating(true);
                             self.cursor_mode = .resize;
 
                             _ = self.cursor.warp(

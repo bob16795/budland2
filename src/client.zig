@@ -177,7 +177,7 @@ const Listeners = struct {
         const events: *X11ClientEvents = @fieldParentPtr("resize_event", listener);
         const client: *Client = @fieldParentPtr("events", @as(*ClientEvents, @ptrCast(events)));
 
-        client.resize(null, false) catch |ex| {
+        client.resize(client.bounds) catch |ex| {
             @panic(@errorName(ex));
         };
     }
@@ -186,7 +186,7 @@ const Listeners = struct {
         const events: *XDGClientEvents = @fieldParentPtr("resize_event", listener);
         const client: *Client = @fieldParentPtr("events", @as(*ClientEvents, @ptrCast(events)));
 
-        client.resize(null, false) catch |ex| {
+        client.resize(client.bounds) catch |ex| {
             @panic(@errorName(ex));
         };
     }
@@ -276,6 +276,18 @@ pub fn updateFrame(self: *Client) !void {
     if (self.isStopped())
         return;
 
+    self.scene.node.setPosition(self.bounds.x, self.bounds.y);
+    self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
+
+    const clip: wlr.Box = .{
+        .x = 0,
+        .y = 0,
+        .width = self.inner_bounds.width,
+        .height = self.inner_bounds.height,
+    };
+
+    self.scene_surface.node.subsurfaceTreeSetClip(&clip);
+
     if (self.hide_frame) {
         for (self.frame.sides) |side|
             side.node.setEnabled(false);
@@ -295,10 +307,7 @@ pub fn updateFrame(self: *Client) !void {
     self.frame.sides[0].node.setEnabled(self.frame.kind == .border);
     self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
 
-    self.scene.node.setPosition(self.bounds.x, self.bounds.y);
-    self.scene.node.setPosition(self.bounds.x, self.bounds.y);
     self.frame.shadow_tree.node.setPosition(self.bounds.x + self.bounds.width, self.bounds.y + self.bounds.height);
-    self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
     self.frame.shadow[0].node.setPosition(0, -self.bounds.height + SHADOW_SIZE);
     self.frame.shadow[1].node.setPosition(-self.bounds.width + SHADOW_SIZE, 0);
 
@@ -399,11 +408,11 @@ pub fn updateFrame(self: *Client) !void {
 
         context.setOperator(.source);
 
-        context.setSourceRgba(window_palette[0][2], window_palette[0][1], window_palette[0][0], window_palette[0][3]);
+        context.setSourceRgba(tab_palette[0][2], tab_palette[0][1], tab_palette[0][0], tab_palette[0][3]);
         context.rectangle(
             @floatFromInt(tab_start),
             @floatFromInt(0),
-            @floatFromInt(tab_width),
+            @floatFromInt(tab_width + 1),
             @floatFromInt(total_height),
         );
         context.fill();
@@ -412,8 +421,8 @@ pub fn updateFrame(self: *Client) !void {
         context.rectangle(
             @floatFromInt(self.border + tab_start),
             @floatFromInt(self.border),
-            @floatFromInt(tab_width - self.border),
-            @floatFromInt(total_height - self.border * 2),
+            @floatFromInt(tab_width - self.border - self.border),
+            @floatFromInt(total_height - self.border - self.border),
         );
         context.fill();
 
@@ -606,20 +615,8 @@ pub fn map(self: *Client) !void {
 
     std.log.info("map client {*} surf {}", .{ self, self.surface });
 
-    switch (self.surface) {
-        .X11 => {
-            if (self.managed) {
-                self.scene.node.setPosition(self.bounds.x, self.bounds.y);
-            } else {
-                self.scene.node.setPosition(self.bounds.x, self.bounds.y);
-            }
-        },
-        .XDG => {
-            self.scene.node.setPosition(self.bounds.x, self.bounds.y);
-        },
-    }
-
-    self.monitor.?.arrangeClients();
+    if (self.monitor) |m|
+        try m.arrangeClients();
 }
 
 pub fn applyRules(self: *Client) !void {
@@ -631,15 +628,15 @@ pub fn applyRules(self: *Client) !void {
     var rule = self.session.config.client_title_rules.get(title);
     rule = self.session.config.client_class_rules.getOver(appid, rule);
 
-    if (rule.icon) |icon| self.setIcon(icon);
-    if (rule.tag) |tag| self.setTag(tag);
-    if (rule.container) |container| self.setContainer(container);
-    if (rule.border) |border| self.setBorder(border);
-    if (rule.floating) |floating| self.setFloating(floating);
+    if (rule.tag) |tag| try self.setTag(tag);
+    if (rule.container) |container| try self.setContainer(container);
+    if (rule.border) |border| try self.setBorder(border);
+    if (rule.floating) |floating| try self.setFloating(floating);
     // TODO: implement these
     // if (rule.center) |center| self.center = center;
     // if (rule.fullscreen) |fullscreen| self.fullscreen = fullscreen;
-    if (rule.label) |label| self.setLabel(label);
+    if (rule.icon) |icon| try self.setIcon(icon);
+    if (rule.label) |label| try self.setLabel(label);
 
     std.log.info("rule {s} {s}: {}", .{ appid, title, rule });
 
@@ -683,60 +680,62 @@ pub fn getLabel(self: *Client) ?[]const u8 {
     return self.getTitle();
 }
 
-pub fn resize(self: *Client, in_target_bounds: ?wlr.Box, force: bool) !void {
+pub fn resize(self: *Client, in_target_bounds: wlr.Box) !void {
     var target_bounds = in_target_bounds;
 
-    if (target_bounds) |*target| {
-        if (target.width < 20)
-            target.width = 20;
-        if (target.height < 20)
-            target.height = 20;
+    if (target_bounds.width < 20)
+        target_bounds.width = 20;
+    if (target_bounds.height < 20)
+        target_bounds.height = 20;
 
-        self.bounds = target.*;
+    self.bounds = target_bounds;
+
+    if (self.hide_frame) {
+        self.inner_bounds.x = 0;
+        self.inner_bounds.y = 0;
+        self.inner_bounds.width = self.bounds.width;
+        self.inner_bounds.height = self.bounds.height;
+    } else {
+        const title_height = self.session.config.getTitleHeight();
+
+        switch (self.frame.kind) {
+            .hide => {
+                self.inner_bounds.x = 0;
+                self.inner_bounds.y = 0;
+                self.inner_bounds.width = self.bounds.width;
+                self.inner_bounds.height = self.bounds.height;
+            },
+            .border => {
+                self.inner_bounds.x = self.border;
+                self.inner_bounds.y = self.border;
+                self.inner_bounds.width = self.bounds.width - self.border - self.border;
+                self.inner_bounds.height = self.bounds.height - self.border - self.border;
+            },
+            .title => {
+                self.inner_bounds.x = self.border;
+                self.inner_bounds.y = self.border + title_height + self.border;
+                self.inner_bounds.width = self.bounds.width - self.border - self.border;
+                self.inner_bounds.height = self.bounds.height - self.border - title_height - self.border - self.border;
+            },
+        }
     }
-
-    const title_height = self.session.config.getTitleHeight();
-
-    switch (self.frame.kind) {
-        .hide => {
-            self.inner_bounds.x = 0;
-            self.inner_bounds.y = 0;
-            self.inner_bounds.width = self.bounds.width;
-            self.inner_bounds.height = self.bounds.height;
-        },
-        .border => {
-            self.inner_bounds.x = self.border;
-            self.inner_bounds.y = self.border;
-            self.inner_bounds.width = self.bounds.width - self.border - self.border;
-            self.inner_bounds.height = self.bounds.height - self.border - self.border;
-        },
-        .title => {
-            self.inner_bounds.x = self.border;
-            self.inner_bounds.y = self.border + title_height + self.border;
-            self.inner_bounds.width = self.bounds.width - self.border - self.border;
-            self.inner_bounds.height = self.bounds.height - self.border - title_height - self.border - self.border;
-        },
-    }
-
-    // TODO: why
-    _ = force;
 
     self.resize_serial = self.updateSize();
 
     try self.updateFrame();
 }
 
-pub inline fn setContainer(self: *Client, container: u8) void {
+pub inline fn setContainer(self: *Client, container: u8) !void {
     if (self.container == container)
         return;
 
     self.container = container;
 
-    if (self.monitor) |monitor|
-        monitor.arrangeClients();
+    if (self.monitor) |m|
+        try m.arrangeClients();
 }
 
-pub inline fn setBorder(self: *Client, border: i32) void {
+pub inline fn setBorder(self: *Client, border: i32) !void {
     if (self.border == border)
         return;
 
@@ -747,10 +746,10 @@ pub inline fn setBorder(self: *Client, border: i32) void {
     else
         self.frame.kind = .title;
 
-    self.resize(self.bounds, true) catch {};
+    try self.resize(self.bounds);
 }
 
-pub inline fn setIcon(self: *Client, icon: ?[*:0]const u8) void {
+pub inline fn setIcon(self: *Client, icon: ?[*:0]const u8) !void {
     if (self.icon) |old_icon|
         self.session.config.allocator.free(std.mem.span(old_icon));
 
@@ -759,10 +758,10 @@ pub inline fn setIcon(self: *Client, icon: ?[*:0]const u8) void {
     else
         self.icon = null;
 
-    self.updateFrame() catch {};
+    try self.updateFrame();
 }
 
-pub inline fn setLabel(self: *Client, label: ?[*:0]const u8) void {
+pub inline fn setLabel(self: *Client, label: ?[*:0]const u8) !void {
     if (self.label) |old_label|
         self.session.config.allocator.free(std.mem.span(old_label));
 
@@ -771,20 +770,27 @@ pub inline fn setLabel(self: *Client, label: ?[*:0]const u8) void {
     else
         self.label = null;
 
-    self.updateFrame() catch {};
+    try self.updateFrame();
 }
 
-pub inline fn setTag(self: *Client, tag: usize) void {
+pub inline fn setTag(self: *Client, tag: usize) !void {
     if (self.tag == tag)
         return;
 
     self.tag = tag;
 
-    if (self.monitor) |monitor|
-        monitor.arrangeClients();
+    if (self.monitor) |m|
+        try m.arrangeClients();
 }
 
-pub inline fn setFloating(self: *Client, floating: bool) void {
+pub inline fn setFullscreen(self: *Client, fullscreen: bool) !void {
+    _ = self;
+    _ = fullscreen;
+
+    return;
+}
+
+pub inline fn setFloating(self: *Client, floating: bool) !void {
     if (self.floating == floating)
         return;
 
@@ -797,8 +803,8 @@ pub inline fn setFloating(self: *Client, floating: bool) void {
     const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
     self.scene.node.reparent(self.session.wayland_data.?.layers.get(layer));
 
-    if (self.monitor) |monitor|
-        monitor.arrangeClients();
+    if (self.monitor) |m|
+        try m.arrangeClients();
 
     if (!self.frame.is_init)
         return;
@@ -836,43 +842,63 @@ pub fn updateSize(self: *Client) u32 {
 }
 
 pub fn commit(self: *Client) !void {
-    var geom: wlr.Box = undefined;
+    if (self.getSurface().mapped) {
+        try self.resize(self.bounds);
+
+        if (self.monitor) |m|
+            try m.arrangeClients();
+    }
+
     switch (self.surface) {
-        .XDG => |xdg| {
-            xdg.getGeometry(&geom);
+        .XDG => |surface| {
+            if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
+                self.resize_serial = 0;
         },
-        .X11 => |xsurface| {
-            geom = .{
-                .x = xsurface.x,
-                .y = xsurface.y,
-                .width = xsurface.width,
-                .height = xsurface.height,
-            };
+        .X11 => |surface| {
+            if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
+                self.resize_serial = 0;
         },
     }
 
-    if ((self.monitor != null and
-        !geom.empty() and
-        (geom.width != self.inner_bounds.width or
-            geom.height != self.inner_bounds.height)))
-    {
-        switch (self.surface) {
-            .XDG => |surface| {
-                try self.resize(self.bounds, false);
+    // var geom: wlr.Box = undefined;
+    // switch (self.surface) {
+    //     .XDG => |xdg| {
+    //         xdg.getGeometry(&geom);
+    //     },
+    //     .X11 => |xsurface| {
+    //         geom = .{
+    //             .x = xsurface.x,
+    //             .y = xsurface.y,
+    //             .width = xsurface.width,
+    //             .height = xsurface.height,
+    //         };
+    //     },
+    // }
 
-                if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
-                    self.resize_serial = 0;
-            },
-            .X11 => |surface| {
-                try self.resize(self.bounds, false);
+    // if ((self.monitor != null and
+    //     !geom.empty() and
+    //     (geom.width != self.inner_bounds.width or
+    //         geom.height != self.inner_bounds.height)))
+    // {
+    //     switch (self.surface) {
+    //         .XDG => |surface| {
+    //             if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
+    //                 self.resize_serial = 0;
 
-                if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
-                    self.resize_serial = 0;
-            },
-        }
-    }
+    //             if (self.monitor) |m|
+    //                 try m.arrangeClients();
+    //         },
+    //         .X11 => |surface| {
+    //             try self.resize(self.bounds, false);
 
-    self.monitor.?.arrangeClients();
+    //             if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
+    //                 self.resize_serial = 0;
+
+    //             if (self.monitor) |m|
+    //                 try m.arrangeClients();
+    //         },
+    //     }
+    // }
 }
 
 pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !void {
@@ -882,9 +908,15 @@ pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !vo
         return;
 
     if (self.floating or !self.managed)
-        try self.resize(.{ .x = event.x, .y = event.y, .width = event.width, .height = event.height }, false);
+        try self.resize(.{
+            .x = event.x,
+            .y = event.y,
+            .width = event.width,
+            .height = event.height,
+        });
 
-    self.monitor.?.arrangeClients();
+    if (self.monitor) |m|
+        try m.arrangeClients();
 }
 
 pub fn activate(self: *Client) !void {
@@ -944,7 +976,8 @@ pub fn deinit(self: *Client) void {
         },
     }
 
-    if (self.monitor) |m| m.arrangeClients();
+    if (self.monitor) |m|
+        m.arrangeClients() catch {};
 
     self.session.config.allocator.destroy(self);
 }
@@ -1005,18 +1038,20 @@ pub fn setMonitor(self: *Client, target_monitor: ?*Monitor) !void {
     self.prev_bounds = self.bounds;
 
     if (old_monitor) |old| {
+        try old.arrangeClients();
+
         self.getSurface().sendLeave(old.output);
-        old.arrangeClients();
     }
 
     if (target_monitor) |new| {
-        try self.resize(self.bounds, false);
         self.getSurface().sendEnter(new.output);
-        self.setTag(new.tag);
+        try self.setTag(new.tag);
 
-        // self.setFullscreen(self.isfullscreen);
+        try self.resize(self.bounds);
 
-        new.arrangeClients();
+        // try self.setFullscreen(self.isfullscreen);
+
+        try new.arrangeClients();
     }
 
     try self.session.focusClient(self, true);

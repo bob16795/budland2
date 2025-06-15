@@ -100,7 +100,7 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
     const old_state = surf.current;
     surf.current = surf.pending;
     self.mapped = true;
-    self.monitor.arrangeLayers();
+    try self.monitor.arrangeLayers();
     surf.current = old_state;
 }
 
@@ -129,7 +129,7 @@ pub fn commit(self: *LayerSurface) !void {
 
     self.mapped = self.surface.surface.mapped;
 
-    self.monitor.arrangeLayers();
+    try self.monitor.arrangeLayers();
 }
 
 pub fn notifyEnter(self: *LayerSurface, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
@@ -149,7 +149,7 @@ pub fn unmap(self: *LayerSurface) !void {
 
     self.monitor = @ptrFromInt(self.surface.output.?.data);
     if (self.surface.output.?.data != 0)
-        self.monitor.arrangeLayers();
+        try self.monitor.arrangeLayers();
 
     self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
 }
@@ -159,7 +159,7 @@ pub fn deinit(self: *LayerSurface) void {
 
     self.link.remove();
 
-    self.monitor.arrangeLayers();
+    self.monitor.arrangeLayers() catch {};
 
     self.events.map_event.link.remove();
     self.events.unmap_event.link.remove();
