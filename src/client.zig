@@ -1089,7 +1089,7 @@ pub fn setMonitor(self: *Client, target_monitor: ?*Monitor) !void {
 
         try self.resize(self.bounds);
 
-        try self.setFullscreen(self.isfullscreen);
+        try self.setFullscreen(self.fullscreen);
 
         try new.arrangeClients();
     }
