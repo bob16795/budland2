@@ -104,15 +104,16 @@ pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
 }
 
 pub fn frame(self: *Monitor) !void {
-    commit: {
-        var iter = self.session.clients.iterator(.forward);
-        while (iter.next()) |client| {
-            if (client.resize_serial != 0 and
-                !client.floating and
-                self.clientVisible(client) and
-                !client.isStopped())
-                break :commit;
-        }
+    // TODO:Figure out why this skips
+    //commit: {
+    {
+        // var iter = self.session.clients.iterator(.forward);
+        // while (iter.next()) |client| {
+        //     if (client.resize_serial != 0 and
+        //         self.clientVisible(client) and
+        //         !client.isStopped())
+        //         break :commit;
+        // }
 
         // self.output.commitState(self.state);
         _ = self.scene_output.commit(null);
@@ -170,7 +171,9 @@ pub fn arrangeLayers(self: *Monitor) !void {
 }
 
 pub fn clientVisible(self: *Monitor, client: *Client) bool {
-    return client.monitor == self and self.tag == client.tag;
+    return (client.floating or
+        self.session.config.layouts.items[self.layout].container.has(client.container)) and
+        client.monitor == self and self.tag == client.tag;
 }
 
 pub fn focusedClient(self: *Monitor) ?*Client {

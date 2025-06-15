@@ -67,8 +67,13 @@ const Keyboard = struct {
 
         if (!self.input.locked and key_data.state == .pressed) {
             for (keysyms) |sym| {
+                const logo_down = if (@import("builtin").mode == .Debug)
+                    modifier_mask.alt
+                else
+                    modifier_mask.logo;
+
                 if (@intFromEnum(sym) == xkb.Keysym.Escape and
-                    modifier_mask.alt and modifier_mask.shift)
+                    logo_down and modifier_mask.shift)
                 {
                     self.input.session.quit();
                     handled = true;

@@ -241,10 +241,10 @@ const SHADOW_SIZE = 10;
 fn sharesTabs(self: *const Client, other: *Client) bool {
     return self == other or
         (self.container == other.container and
-            !self.floating and
-            !other.floating and
-            self.tag == other.tag and
-            self.monitor == other.monitor);
+        !self.floating and
+        !other.floating and
+        self.tag == other.tag and
+        self.monitor == other.monitor);
 }
 
 pub fn updateFrame(self: *Client) !void {
@@ -253,6 +253,12 @@ pub fn updateFrame(self: *Client) !void {
 
     if (self.isStopped())
         return;
+
+    const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
+    self.scene.node.reparent(self.session.wayland_data.?.layers.get(layer));
+
+    const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
+    self.frame.shadow_tree.node.reparent(self.session.wayland_data.?.layers.get(shadow_layer));
 
     self.scene.node.setPosition(self.bounds.x, self.bounds.y);
     self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
@@ -272,18 +278,14 @@ pub fn updateFrame(self: *Client) !void {
         for (self.frame.shadow) |shadow|
             shadow.node.setEnabled(false);
         self.frame.buffer_scene.node.setEnabled(false);
-
-        return;
+    } else {
+        for (self.frame.shadow) |shadow|
+            shadow.node.setEnabled(true);
+        for (self.frame.sides) |side|
+            side.node.setEnabled(self.frame.kind == .title or self.frame.kind == .border);
+        self.frame.sides[0].node.setEnabled(self.frame.kind == .border);
+        self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
     }
-
-    for (self.frame.shadow) |shadow|
-        shadow.node.setEnabled(true);
-
-    for (self.frame.sides) |side|
-        side.node.setEnabled(self.frame.kind == .title or self.frame.kind == .border);
-
-    self.frame.sides[0].node.setEnabled(self.frame.kind == .border);
-    self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
 
     self.frame.shadow_tree.node.setPosition(self.bounds.x + self.bounds.width, self.bounds.y + self.bounds.height);
     self.frame.shadow[0].node.setPosition(0, -self.bounds.height + SHADOW_SIZE);
@@ -432,7 +434,6 @@ pub fn updateFrame(self: *Client) !void {
         .height = @floatFromInt(self.frame.title_buffer.base.height),
     });
 
-    self.frame.buffer_scene.node.setEnabled(true);
     self.frame.buffer_scene.setDestSize(total_width, total_height);
 }
 
@@ -450,9 +451,9 @@ pub fn init(session: *Session, target: ClientSurface) !void {
 
                     var box =
                         if (client.monitor) |parent_mon|
-                            parent_mon.window
-                        else
-                            break :client_check;
+                        parent_mon.window
+                    else
+                        break :client_check;
                     box.x -= client.bounds.x;
                     box.y -= client.bounds.y;
 
@@ -597,9 +598,12 @@ pub fn map(self: *Client) !void {
     self.session.clients.append(self);
     self.session.focus_clients.append(self);
 
+    try self.session.focusClient(self, true);
+
     if (self.floating)
-        try self.resize(geom)
-    else if (self.monitor) |m|
+        try self.resize(geom);
+
+    if (self.monitor) |m|
         try m.arrangeClients();
 
     try self.updateFrame();
@@ -666,21 +670,21 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     var result = bounds;
 
     const title_height = self.session.config.getTitleHeight();
-    const x_start = if (self.hide_frame or self.frame.kind == .hide)
+    const x_start = if (self.frame.kind == .hide)
         0
     else
         self.border;
-    const x_border = x_start + if (self.hide_frame or self.frame.kind == .hide)
+    const x_border = x_start + if (self.frame.kind == .hide)
         0
     else
         self.border;
-    const y_start = if (self.hide_frame or self.frame.kind == .hide)
+    const y_start = if (self.frame.kind == .hide)
         0
     else if (self.frame.kind == .border)
         self.border
     else
         self.border + title_height + self.border;
-    const y_border = y_start + if (self.hide_frame or self.frame.kind == .hide)
+    const y_border = y_start + if (self.frame.kind == .hide)
         0
     else
         self.border;
@@ -728,12 +732,12 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
                 if (hints.flags & 0b100000 != 0) {
                     result.width = @min(
                         result.width,
-                        @max(hints.max_width, 10000000) + x_border,
+                        @min(hints.max_width, 10000000) + x_border,
                     );
 
                     result.height = @min(
                         result.height,
-                        @max(hints.max_height, 10000000) + y_border,
+                        @min(hints.max_height, 10000000) + y_border,
                     );
                 }
             }
@@ -776,34 +780,27 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
 pub fn resize(self: *Client, in_target_bounds: wlr.Box) !void {
     self.bounds = self.applyBounds(in_target_bounds, false);
 
-    if (self.hide_frame) {
-        self.inner_bounds.x = 0;
-        self.inner_bounds.y = 0;
-        self.inner_bounds.width = self.bounds.width;
-        self.inner_bounds.height = self.bounds.height;
-    } else {
-        const title_height = self.session.config.getTitleHeight();
+    const title_height = self.session.config.getTitleHeight();
 
-        switch (self.frame.kind) {
-            .hide => {
-                self.inner_bounds.x = 0;
-                self.inner_bounds.y = 0;
-                self.inner_bounds.width = self.bounds.width;
-                self.inner_bounds.height = self.bounds.height;
-            },
-            .border => {
-                self.inner_bounds.x = self.border;
-                self.inner_bounds.y = self.border;
-                self.inner_bounds.width = self.bounds.width - self.border - self.border;
-                self.inner_bounds.height = self.bounds.height - self.border - self.border;
-            },
-            .title => {
-                self.inner_bounds.x = self.border;
-                self.inner_bounds.y = self.border + title_height + self.border;
-                self.inner_bounds.width = self.bounds.width - self.border - self.border;
-                self.inner_bounds.height = self.bounds.height - self.border - title_height - self.border - self.border;
-            },
-        }
+    switch (self.frame.kind) {
+        .hide => {
+            self.inner_bounds.x = 0;
+            self.inner_bounds.y = 0;
+            self.inner_bounds.width = self.bounds.width;
+            self.inner_bounds.height = self.bounds.height;
+        },
+        .border => {
+            self.inner_bounds.x = self.border;
+            self.inner_bounds.y = self.border;
+            self.inner_bounds.width = self.bounds.width - self.border - self.border;
+            self.inner_bounds.height = self.bounds.height - self.border - self.border;
+        },
+        .title => {
+            self.inner_bounds.x = self.border;
+            self.inner_bounds.y = self.border + title_height + self.border;
+            self.inner_bounds.width = self.bounds.width - self.border - self.border;
+            self.inner_bounds.height = self.bounds.height - self.border - title_height - self.border - self.border;
+        },
     }
 
     self.resize_serial = self.updateSize();
@@ -881,15 +878,12 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
         return;
 
     // cant unfloat a window im moving
-    if (self.session.input.cursor_mode != .normal)
+    if (self.session.input.cursor_mode != .normal and
+        self.session.input.cursor_mode != .pressed and
+        self.floating == true)
         return;
 
     self.floating = floating;
-
-    // if (self.managed) {
-    const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
-    self.scene.node.reparent(self.session.wayland_data.?.layers.get(layer));
-    // }
 
     if (self.monitor) |m|
         try m.arrangeClients();
@@ -897,14 +891,7 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
     if (!self.frame.is_init)
         return;
 
-    const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
-    self.frame.shadow_tree.node.reparent(self.session.wayland_data.?.layers.get(shadow_layer));
-
-    if (self.border == 0)
-        self.frame.kind = .hide
-    else if (self.floating)
-        self.frame.kind = .title
-    else
+    if (self.floating)
         self.frame.kind = .title;
 }
 
@@ -995,8 +982,6 @@ pub fn unmap(self: *Client) !void {
         self.frame.is_init = false;
     }
 
-    defer self.scene.node.destroy();
-
     if (!self.managed) {
         if (self.getSurface() == self.session.exclusive_focus)
             self.session.exclusive_focus = null;
@@ -1011,12 +996,19 @@ pub fn unmap(self: *Client) !void {
 
             self.session.focusClear();
         }
-    } else {
-        try self.setMonitor(null);
     }
 
     self.link.remove();
     self.focus_link.remove();
+
+    self.scene.node.destroy();
+
+    const objects = self.session.getObjectsAt(
+        self.session.input.cursor.x,
+        self.session.input.cursor.y,
+    );
+    if (objects.client) |client|
+        try self.session.focusClient(client, true);
 }
 
 pub fn deinit(self: *Client) void {

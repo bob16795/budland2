@@ -148,14 +148,46 @@ const MouseBindData = struct {
     action: MouseAction,
 };
 
-const Container = struct {
-    name: []const u8,
-    id: u8,
-
+const ContainerSize = struct {
     x_min: f64,
     y_min: f64,
     x_max: f64,
     y_max: f64,
+
+    pub fn apply(self: ContainerSize, other: ContainerSize) ContainerSize {
+        const my_x: f64 = self.x_max - self.x_min;
+        const my_y: f64 = self.y_max - self.y_min;
+
+        return .{
+            .x_min = self.x_min + my_x * other.x_min,
+            .x_max = self.x_min + my_x * other.x_max,
+            .y_min = self.y_min + my_y * other.y_min,
+            .y_max = self.y_min + my_y * other.y_max,
+        };
+    }
+
+    pub fn eval(self: ContainerSize, bounds: wlr.Box) wlr.Box {
+        const screen_x: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_min);
+        const screen_y: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_min);
+        const screen_x_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_max);
+        const screen_y_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_max);
+        const screen_w = screen_x_max - screen_x;
+        const screen_h = screen_y_max - screen_y;
+
+        return .{
+            .x = screen_x + bounds.x,
+            .y = screen_y + bounds.y,
+            .width = screen_w,
+            .height = screen_h,
+        };
+    }
+};
+
+const Container = struct {
+    name: []const u8,
+    id: u8,
+
+    size: ContainerSize,
 
     children: []*const Container,
 
@@ -195,48 +227,34 @@ const Container = struct {
         return result;
     }
 
-    pub fn getSize(self: *const Container, idx: u8, bounds: wlr.Box, usage: []bool) ?wlr.Box {
+    pub fn getSize(self: *const Container, idx: u8, usage: []bool) ?ContainerSize {
         if (!self.has(idx))
             return null;
 
-        const screen_x: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_min);
-        const screen_y: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_min);
-        const screen_x_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.width)) * self.x_max);
-        const screen_y_max: i32 = @intFromFloat(@as(f64, @floatFromInt(bounds.height)) * self.y_max);
-        const screen_w = screen_x_max - screen_x;
-        const screen_h = screen_y_max - screen_y;
-
-        const result: wlr.Box = .{
-            .x = screen_x + bounds.x,
-            .y = screen_y + bounds.y,
-            .width = screen_w,
-            .height = screen_h,
-        };
-
         if (self.used(usage) == 1) {
-            return result;
-        }
-
-        // TODO: This is a flawed implementation, really the parent container
-        //       should resize the child to completly fill space, but this
-        //       works for now
-        if (self.childrenUsed(usage) == 1) {
+            return .{
+                .x_min = 0.0,
+                .x_max = 1.0,
+                .y_min = 0.0,
+                .y_max = 1.0,
+            };
+        } else if (self.childrenUsed(usage) == 1) {
             for (self.children) |child| {
-                if (child.has(idx)) {
-                    for (child.children) |subchild| {
-                        if (subchild.getSize(idx, bounds, usage)) |new_result|
-                            return new_result;
-                    }
-                }
-            }
-        } else {
-            for (self.children) |child| {
-                if (child.getSize(idx, result, usage)) |new_result|
+                if (child.getSize(idx, usage)) |new_result|
                     return new_result;
             }
-        }
 
-        return null;
+            // TODO: is this the best choice?
+            unreachable;
+        } else {
+            for (self.children) |child| {
+                if (child.getSize(idx, usage)) |new_result|
+                    return child.size.apply(new_result);
+            }
+
+            // TODO: is this the best choice?
+            unreachable;
+        }
     }
 };
 
@@ -255,7 +273,10 @@ const Layout = struct {
             .height = bounds.height - self.gaps_outer * 2 - border,
         };
 
-        const result = self.container.getSize(idx, new_bounds, usage) orelse new_bounds;
+        const result = if (self.container.getSize(idx, usage)) |size|
+            size.eval(new_bounds)
+        else
+            new_bounds;
 
         return .{
             .x = result.x + self.gaps_inner,
@@ -865,6 +886,7 @@ const Operation = union(OperationKind) {
                                 @enumFromInt(xkb.Keysym.at),
                                 @enumFromInt(xkb.Keysym.numbersign),
                                 @enumFromInt(xkb.Keysym.dollar),
+                                @enumFromInt(xkb.Keysym.percent),
                             };
                             keysym = shift[std.ascii.toLower(key[0]) - '0'];
                         } else {
@@ -1197,10 +1219,12 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 .name = try self.allocator.dupe(u8, client_container.name),
                 .id = @intCast(self.containers.items.len),
 
-                .x_min = client_container.left,
-                .y_min = client_container.top,
-                .x_max = client_container.right,
-                .y_max = client_container.bottom,
+                .size = .{
+                    .x_min = client_container.left,
+                    .y_min = client_container.top,
+                    .x_max = client_container.right,
+                    .y_max = client_container.bottom,
+                },
 
                 .children = &.{},
             };
@@ -1227,10 +1251,12 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 .name = try self.allocator.dupe(u8, multi_container.name),
                 .id = @intCast(self.containers.items.len),
 
-                .x_min = multi_container.left,
-                .y_min = multi_container.top,
-                .x_max = multi_container.right,
-                .y_max = multi_container.bottom,
+                .size = .{
+                    .x_min = multi_container.left,
+                    .y_min = multi_container.top,
+                    .x_max = multi_container.right,
+                    .y_max = multi_container.bottom,
+                },
 
                 .children = try self.allocator.dupe(*const Container, &.{ a.?, b.? }),
             };
