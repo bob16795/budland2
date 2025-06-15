@@ -445,7 +445,7 @@ pub fn init(session: *Session, target: ClientSurface) !void {
 
                 client_check: {
                     const client = session.getClient(surface.surface) orelse break :client_check;
-                    const new_surface = try client.scene.createSceneXdgSurface(surface);
+                    const new_surface = try client.scene_surface.createSceneXdgSurface(surface);
                     surface.surface.data = @intFromPtr(new_surface);
 
                     var box =
@@ -545,6 +545,10 @@ pub fn map(self: *Client) !void {
             return,
     };
 
+    // if (!self.managed) {
+    //     self.scene.reparent();
+    // }
+
     self.scene.node.data = @intFromPtr(self);
     self.scene_surface.node.data = @intFromPtr(self);
 
@@ -558,31 +562,47 @@ pub fn map(self: *Client) !void {
         .XDG => |xdg| {
             xdg.getGeometry(&geom);
         },
-        .X11 => {
-            geom = .{
-                .x = 0,
-                .y = 0,
-                .width = 0,
-                .height = 0,
-            };
+        .X11 => |x11| {
+            if (self.managed) {
+                geom = .{
+                    .x = 0,
+                    .y = 0,
+                    .width = 0,
+                    .height = 0,
+                };
+            } else {
+                geom = .{
+                    .x = x11.x,
+                    .y = x11.y,
+                    .width = x11.width,
+                    .height = x11.height,
+                };
+            }
         },
     }
 
     if (self.managed)
         try self.applyRules();
 
-    self.frame = try .init(if (self.managed) if (self.floating) .title else .border else .hide, self.session.config.colors[0][0], self);
+    self.frame = try .init(if (self.managed)
+        if (self.floating) .title else .border
+    else
+        .hide, self.session.config.colors[0][0], self);
 
-    geom = self.applyBounds(geom, true);
-    try self.resize(geom);
+    if (self.managed)
+        geom = self.applyBounds(geom, true);
+
+    std.log.info("map client {*} surf {}", .{ self, self.surface });
 
     self.session.clients.append(self);
     self.session.focus_clients.append(self);
 
-    std.log.info("map client {*} surf {}", .{ self, self.surface });
-
-    if (self.monitor) |m|
+    if (self.floating)
+        try self.resize(geom)
+    else if (self.monitor) |m|
         try m.arrangeClients();
+
+    try self.updateFrame();
 }
 
 pub fn applyRules(self: *Client) !void {
@@ -708,12 +728,12 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
                 if (hints.flags & 0b100000 != 0) {
                     result.width = @min(
                         result.width,
-                        hints.max_width + x_border,
+                        @max(hints.max_width, 10000000) + x_border,
                     );
 
                     result.height = @min(
                         result.height,
-                        hints.max_height + y_border,
+                        @max(hints.max_height, 10000000) + y_border,
                     );
                 }
             }
@@ -866,8 +886,10 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
 
     self.floating = floating;
 
+    // if (self.managed) {
     const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
     self.scene.node.reparent(self.session.wayland_data.?.layers.get(layer));
+    // }
 
     if (self.monitor) |m|
         try m.arrangeClients();
@@ -887,12 +909,19 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
 }
 
 pub fn updateSize(self: *Client) u32 {
+    const inner: wlr.Box = .{
+        .x = self.bounds.x + self.inner_bounds.x,
+        .y = self.bounds.y + self.inner_bounds.y,
+        .width = self.inner_bounds.width,
+        .height = self.inner_bounds.height,
+    };
+
     if (self.surface == .X11) {
         self.surface.X11.configure(
-            @intCast(self.inner_bounds.x),
-            @intCast(self.inner_bounds.y),
-            @intCast(@max(20, self.inner_bounds.width)),
-            @intCast(@max(20, self.inner_bounds.height)),
+            @intCast(inner.x),
+            @intCast(inner.y),
+            @intCast(inner.width),
+            @intCast(inner.height),
         );
 
         return 0;
@@ -900,11 +929,11 @@ pub fn updateSize(self: *Client) u32 {
 
     if (self.surface.XDG.role_data.toplevel == null) return 0;
 
-    if (self.inner_bounds.width == self.surface.XDG.role_data.toplevel.?.current.width and
-        self.inner_bounds.height == self.surface.XDG.role_data.toplevel.?.current.height)
+    if (inner.width == self.surface.XDG.role_data.toplevel.?.current.width and
+        inner.height == self.surface.XDG.role_data.toplevel.?.current.height)
         return 0;
 
-    return self.surface.XDG.role_data.toplevel.?.setSize(self.inner_bounds.width, self.inner_bounds.height);
+    return self.surface.XDG.role_data.toplevel.?.setSize(inner.width, inner.height);
 }
 
 pub fn commit(self: *Client) !void {
@@ -968,27 +997,22 @@ pub fn unmap(self: *Client) !void {
 
     defer self.scene.node.destroy();
 
-    switch (self.surface) {
-        .XDG => {},
-        .X11 => {
-            if (!self.managed) {
-                if (self.getSurface() == self.session.exclusive_focus)
-                    self.session.exclusive_focus = null;
-                // TODO: remove exclusive focus if needed
-                if (self.getSurface() == self.session.input.seat.keyboard_state.focused_surface) unfocus: {
-                    if (self.session.selmon) |selmon| {
-                        if (selmon.focusedClient()) |top| {
-                            try self.session.focusClient(top, false);
-                            break :unfocus;
-                        }
-                    }
-
-                    self.session.focusClear();
+    if (!self.managed) {
+        if (self.getSurface() == self.session.exclusive_focus)
+            self.session.exclusive_focus = null;
+        // TODO: remove exclusive focus if needed
+        if (self.getSurface() == self.session.input.seat.keyboard_state.focused_surface) unfocus: {
+            if (self.session.selmon) |selmon| {
+                if (selmon.focusedClient()) |top| {
+                    try self.session.focusClient(top, false);
+                    break :unfocus;
                 }
-
-                return;
             }
-        },
+
+            self.session.focusClear();
+        }
+    } else {
+        try self.setMonitor(null);
     }
 
     self.link.remove();
@@ -1015,9 +1039,6 @@ pub fn deinit(self: *Client) void {
             self.events.xevents.set_hints_event.link.remove();
         },
     }
-
-    if (self.monitor) |m|
-        m.arrangeClients() catch {};
 
     self.session.config.allocator.destroy(self);
 }
