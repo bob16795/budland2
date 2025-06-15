@@ -1,6 +1,4 @@
-# Budland 2.0 rewrite repo
-
-**The name of this project will soon change, but its this for now.**
+# Con-positor
 
 ## Install
 
@@ -9,7 +7,7 @@ To install this just clone the repo and install it using zig build, the dependen
 
 ## About
 
-Budland is a wayland compositor that uses a container system simmilar to tiling. I made this because I got sick of manually moving all my windows.
+Conpositor is a wayland compositor that uses a container system simmilar to tiling. I made this because I got sick of manually moving all my windows.
 
 ## Config
 

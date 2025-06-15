@@ -329,7 +329,7 @@ const OperationKind = enum {
     toggle_floating,
     toggle_fullscreen,
     quit_client,
-    quit_budland,
+    quit_conpositor,
     set_color,
     monitor_rule,
     default_rule,
@@ -409,7 +409,7 @@ const Operation = union(OperationKind) {
     toggle_floating,
     toggle_fullscreen,
     quit_client,
-    quit_budland,
+    quit_conpositor,
 
     set_color: struct {
         active: bool,
@@ -1066,7 +1066,7 @@ const Operation = union(OperationKind) {
 
             return try parseOption(Operation, target_text, &.{
                 .{ .input = "client", .value = .quit_client },
-                .{ .input = "budland", .value = .quit_budland },
+                .{ .input = "conpositor", .value = .quit_conpositor },
             });
         } else if (std.mem.eql(u8, first, "reload")) {
             return .reload;
@@ -1104,8 +1104,8 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 const path = try std.mem.concat(self.allocator, u8, &.{
                     home_dir,
                     "/.config/",
-                    "/budland/",
-                    "budland.conf",
+                    "/conpositor/",
+                    "conpositor.conf",
                 });
                 defer self.allocator.free(path);
 
@@ -1127,7 +1127,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 const path = try std.mem.concat(self.allocator, u8, &.{
                     home_dir,
                     "/.config/",
-                    "/budland/",
+                    "/conpositor/",
                     source.file,
                 });
                 defer self.allocator.free(path);
@@ -1391,7 +1391,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         .set_font => |set_font| {
             self.font = set_font.font;
         },
-        .quit_budland => {
+        .quit_conpositor => {
             if (session) |session_val|
                 session_val.quit();
         },
@@ -1483,7 +1483,7 @@ pub fn sourcePath(self: *Config, path: []const u8) ConfigError!void {
     }
 }
 
-pub fn budlandLogFn(
+pub fn conpositorLogFn(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.EnumLiteral),
     comptime format: []const u8,
@@ -1494,7 +1494,7 @@ pub fn budlandLogFn(
     }
 
     const scope_prefix = "(" ++ switch (scope) {
-        std.log.default_log_scope => "Budland",
+        std.log.default_log_scope => "conpositor",
         .SandEEE, .Steam => @tagName(scope),
         else => if (@intFromEnum(level) <= @intFromEnum(std.log.Level.err))
             @tagName(scope)

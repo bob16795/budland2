@@ -69,31 +69,31 @@ pub fn build(b: *std.Build) void {
     wlroots.resolved_target = target;
     wlroots.linkSystemLibrary("wlroots-0.18", .{});
 
-    const budwm = b.addExecutable(.{
-        .name = "budland",
+    const conpositor = b.addExecutable(.{
+        .name = "conpositor",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    budwm.linkLibC();
+    conpositor.linkLibC();
 
-    budwm.root_module.addImport("wayland", wayland);
-    budwm.root_module.addImport("xkbcommon", xkbcommon);
-    budwm.root_module.addImport("wlroots", wlroots);
-    budwm.root_module.addImport("cairo", cairo);
-    budwm.root_module.addImport("pixman", pixman);
+    conpositor.root_module.addImport("wayland", wayland);
+    conpositor.root_module.addImport("xkbcommon", xkbcommon);
+    conpositor.root_module.addImport("wlroots", wlroots);
+    conpositor.root_module.addImport("cairo", cairo);
+    conpositor.root_module.addImport("pixman", pixman);
 
-    budwm.linkSystemLibrary("wayland-server");
-    budwm.linkSystemLibrary("xkbcommon");
-    budwm.linkSystemLibrary("pixman-1");
+    conpositor.linkSystemLibrary("wayland-server");
+    conpositor.linkSystemLibrary("xkbcommon");
+    conpositor.linkSystemLibrary("pixman-1");
 
-    b.installArtifact(budwm);
+    b.installArtifact(conpositor);
 
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
-    const run_cmd = b.addRunArtifact(budwm);
+    const run_cmd = b.addRunArtifact(conpositor);
 
     // By making the run step depend on the install step, it will be run from the
     // installation directory rather than directly from within the cache directory.
@@ -114,17 +114,17 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Creates a step for unit testing. This only builds the test executable
-    const budwm_unit_tests = b.addTest(.{
+    const conpositor_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const run_budwm_unit_tests = b.addRunArtifact(budwm_unit_tests);
+    const run_conposoitor_unit_tests = b.addRunArtifact(conpositor_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_budwm_unit_tests.step);
+    test_step.dependOn(&run_conpositor_unit_tests.step);
 }
