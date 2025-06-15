@@ -314,6 +314,7 @@ const OperationKind = enum {
     default_rule,
     client_rule,
     set_font,
+    source,
     exec,
     auto,
     bind,
@@ -421,6 +422,12 @@ const Operation = union(OperationKind) {
         font: [*:0]const u8,
     },
 
+    source: struct {
+        allocator: std.mem.Allocator,
+
+        file: []const u8,
+    },
+
     exec: struct {
         allocator: std.mem.Allocator,
 
@@ -455,6 +462,12 @@ const Operation = union(OperationKind) {
                 return .{ .exec = .{
                     .allocator = exec.allocator,
                     .command = try exec.allocator.dupe(u8, exec.command),
+                } };
+            },
+            .source => |source| {
+                return .{ .source = .{
+                    .allocator = source.allocator,
+                    .file = try source.allocator.dupe(u8, source.file),
                 } };
             },
             .monitor_rule => |monitor| {
@@ -546,7 +559,7 @@ const Operation = union(OperationKind) {
                 .value = try create_tag.allocator.dupe(u8, create_tag.value),
                 .allocator = create_tag.allocator,
             } },
-            // .create_tag, .focus_tag, .send_tag, .focus_container, .send_container => |string_thing| {},
+            // TODO I think theres more now
             else => return self.*,
         }
     }
@@ -556,6 +569,9 @@ const Operation = union(OperationKind) {
             .bind => |bind| {
                 bind.data.deinit();
                 bind.allocator.destroy(bind.data);
+            },
+            .source => |source| {
+                source.allocator.free(source.file);
             },
             .exec => |exec| {
                 exec.allocator.free(exec.command);
@@ -681,6 +697,14 @@ const Operation = union(OperationKind) {
                 .allocator = self.allocator,
                 .condition = condition,
                 .child = operation,
+            } };
+        } else if (std.mem.eql(u8, first, "source")) {
+            const cmd_text = split.rest();
+            const cmd = try self.allocator.dupe(u8, cmd_text);
+
+            return .{ .source = .{
+                .allocator = self.allocator,
+                .file = cmd,
             } };
         } else if (std.mem.eql(u8, first, "exec")) {
             const cmd_text = split.rest();
@@ -1053,6 +1077,42 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         .bind => |bind| {
             try self.binds.append(try bind.data.clone());
         },
+        .reload => {
+            if (std.posix.getenv("HOME")) |home_dir| {
+                const path = try std.mem.concat(self.allocator, u8, &.{
+                    home_dir,
+                    "/.config/",
+                    "/budland/",
+                    "budland.conf",
+                });
+                defer self.allocator.free(path);
+
+                var old = self.*;
+                defer old.deinit();
+
+                self.* = .init(self.allocator);
+                self.wayland_display = old.wayland_display;
+                self.xwayland_display = old.xwayland_display;
+
+                try self.sourcePath(path);
+
+                if (session) |s| if (s.selmon) |m|
+                    try m.arrangeClients();
+            }
+        },
+        .source => |source| {
+            if (std.posix.getenv("HOME")) |home_dir| {
+                const path = try std.mem.concat(self.allocator, u8, &.{
+                    home_dir,
+                    "/.config/",
+                    "/budland/",
+                    source.file,
+                });
+                defer self.allocator.free(path);
+
+                try self.sourcePath(path);
+            }
+        },
         .exec => |exec| {
             const required = std.mem.count(u8, exec.command, " ") + 1;
             const data = try self.allocator.alloc([]const u8, required);
@@ -1365,7 +1425,6 @@ pub fn event(self: *Config, condition: AutoCondition) ConfigError!void {
         self.apply(operation, null) catch |err| {
             if (err != error.Unimplemented)
                 return error.BadOperationInput;
-            // std.log.warn("TODO: config command {s} {!}", .{ line, err });
         };
     }
 }

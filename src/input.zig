@@ -10,8 +10,8 @@ const Client = @import("client.zig");
 const Input = @This();
 
 // TODO: move to config
-const REPEAT_RATE = 50;
-const REPEAT_DELAY = 300;
+const REPEAT_RATE = 25;
+const REPEAT_DELAY = 600;
 
 const CursorMode = enum {
     normal,
@@ -33,6 +33,13 @@ const InputEvents = struct {
     new_input_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.new_input),
 };
 
+fn cleanMask(mask: wlr.Keyboard.ModifierMask) wlr.Keyboard.ModifierMask {
+    var result = mask;
+    result.caps = false;
+
+    return mask;
+}
+
 const Keyboard = struct {
     input: *Input,
 
@@ -43,13 +50,6 @@ const Keyboard = struct {
 
     key_event: wl.Listener(*wlr.Keyboard.event.Key) = .init(Listeners.keyboard.key),
     modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Listeners.keyboard.modifiers),
-
-    fn cleanMask(mask: wlr.Keyboard.ModifierMask) wlr.Keyboard.ModifierMask {
-        var result = mask;
-        result.caps = false;
-
-        return mask;
-    }
 
     pub fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
         const wayland_data = self.input.session.wayland_data.?;
@@ -83,6 +83,7 @@ const Keyboard = struct {
             }
         }
 
+        // TODO: figure out how I wanna do debug
         // if (!handled and key_data.state == .pressed) {
         //     var buffer: [30]u8 = undefined;
         //     for (keysyms) |keysym| {
@@ -107,7 +108,7 @@ const Keyboard = struct {
             self.keysyms = keysyms;
             try self.key_repeat_source.timerUpdate(self.keyboard.repeat_info.delay);
         } else {
-            self.keysyms.len = 0;
+            self.keysyms = &.{};
             try self.key_repeat_source.timerUpdate(0);
         }
 
@@ -412,7 +413,11 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
     wayland_data.idle_notifier.notifyActivity(self.seat);
 
     switch (button.state) {
-        .pressed => {
+        .pressed => handle_press: {
+            self.cursor_mode = .pressed;
+            if (self.locked)
+                break :handle_press;
+
             const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
 
             if (objects.client) |target| {
@@ -424,37 +429,25 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
             const mods = if (keyboard) |keyb| keyb.getModifiers() else wlr.Keyboard.ModifierMask{};
 
             for (self.session.config.mouse_binds.items) |b| {
-                if (b.button == button.button and b.mod == mods) {
+                if (b.button == button.button and cleanMask(b.mod) == cleanMask(mods)) {
                     if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
-                        return;
+                        break :handle_press;
 
                     switch (b.action) {
                         .move => {
                             self.grab_client = objects.client orelse
-                                return;
+                                break :handle_press;
 
                             try self.grab_client.setFloating(true);
                             self.cursor_mode = .move;
                             self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x;
                             self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y;
 
-                            self.xcursor_image = "fleur";
-                            if (self.xcursor_manager.getXcursor(self.xcursor_image.?, 1)) |xcursor| {
-                                const xwayland = self.session.wayland_data.?.xwayland;
-
-                                xwayland.setCursor(
-                                    xcursor.images[0].buffer,
-                                    xcursor.images[0].width * 4,
-                                    xcursor.images[0].width,
-                                    xcursor.images[0].height,
-                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_x)),
-                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_y)),
-                                );
-                            }
+                            self.cursor.setXcursor(self.xcursor_manager, "fleur");
                         },
                         .resize => {
                             self.grab_client = objects.client orelse
-                                return;
+                                break :handle_press;
 
                             try self.grab_client.setFloating(true);
                             self.cursor_mode = .resize;
@@ -465,30 +458,20 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
                                 @floatFromInt(self.grab_client.bounds.y + self.grab_client.bounds.height),
                             );
 
-                            self.xcursor_image = "bottom_right_corner";
-                            if (self.xcursor_manager.getXcursor(self.xcursor_image.?, 1)) |xcursor| {
-                                const xwayland = self.session.wayland_data.?.xwayland;
-
-                                xwayland.setCursor(
-                                    xcursor.images[0].buffer,
-                                    xcursor.images[0].width * 4,
-                                    xcursor.images[0].width,
-                                    xcursor.images[0].height,
-                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_x)),
-                                    @as(i32, @intCast(xcursor.*.images[0].*.hotspot_y)),
-                                );
-                            }
+                            self.cursor.setXcursor(self.xcursor_manager, "se-resize");
                         },
                     }
+
                     return;
                 }
             }
-
-            std.log.info("Unhandled button {}", .{button.button});
         },
         .released => {
             if (!self.locked and self.cursor_mode != .normal and self.cursor_mode != .pressed) {
                 self.cursor_mode = .normal;
+
+                if (self.xcursor_image) |xcursor_image|
+                    self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
 
                 self.seat.pointerClearFocus();
                 try self.motionNotify(0, null, 0, 0, 0, 0);
@@ -549,9 +532,10 @@ const xkb_rules: xkb.RuleNames = .{
 };
 
 pub fn keyrepeat(keyboard: *Keyboard) c_int {
-    if (keyboard.keysyms.len != 0 and keyboard.keyboard.repeat_info.rate > 0) {
-        keyboard.key_repeat_source.timerUpdate(@divTrunc(1000, keyboard.keyboard.repeat_info.rate)) catch return 0;
-    }
+    if (keyboard.keysyms.len == 0 or keyboard.keyboard.repeat_info.rate <= 0)
+        return 0;
+
+    keyboard.key_repeat_source.timerUpdate(@divTrunc(1000, keyboard.keyboard.repeat_info.rate)) catch return 0;
 
     return 0;
 }
@@ -568,6 +552,7 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
 
             const context = xkb.Context.new(.no_flags) orelse return error.XkbInitFailed;
             defer context.unref();
+
             const keymap = xkb.Keymap.newFromNames(context, &xkb_rules, .no_flags) orelse return error.XkbInitFailed;
             defer keymap.unref();
 

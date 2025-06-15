@@ -78,6 +78,8 @@ xwayland_ready_event: wl.Listener(void) = .init(Listeners.xwayland_ready),
 
 new_output_event: wl.Listener(*wlr.Output) = .init(Listeners.newOutput),
 new_layer_surface_event: wl.Listener(*wlr.LayerSurfaceV1) = .init(Listeners.new_layer_surface),
+new_xdg_toplevel_event: wl.Listener(*wlr.XdgToplevel) = .init(Listeners.new_xdg_toplevel),
+new_xdg_popup_event: wl.Listener(*wlr.XdgPopup) = .init(Listeners.new_xdg_popup),
 new_xdg_surface_event: wl.Listener(*wlr.XdgSurface) = .init(Listeners.new_xdg_surface),
 new_xwayland_surface_event: wl.Listener(*wlr.XwaylandSurface) = .init(Listeners.new_xwayland_surface),
 new_toplevel_decoration_event: wl.Listener(*wlr.XdgToplevelDecorationV1) = .init(Listeners.new_toplevel_decoration),
@@ -148,8 +150,30 @@ const Listeners = struct {
         };
     }
 
+    pub fn new_xdg_popup(listener: *wl.Listener(*wlr.XdgPopup), xdg_surface: *wlr.XdgPopup) void {
+        const self: *Session = @fieldParentPtr("new_xdg_popup_event", listener);
+
+        std.log.info("{*} {}", .{ xdg_surface.base, xdg_surface.base.role });
+
+        self.newClient(.{ .XDG = xdg_surface.base }) catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
+    pub fn new_xdg_toplevel(listener: *wl.Listener(*wlr.XdgToplevel), xdg_surface: *wlr.XdgToplevel) void {
+        const self: *Session = @fieldParentPtr("new_xdg_toplevel_event", listener);
+
+        std.log.info("{*} {}", .{ xdg_surface.base, xdg_surface.base.role });
+
+        self.newClient(.{ .XDG = xdg_surface.base }) catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
     pub fn new_xdg_surface(listener: *wl.Listener(*wlr.XdgSurface), xdg_surface: *wlr.XdgSurface) void {
         const self: *Session = @fieldParentPtr("new_xdg_surface_event", listener);
+
+        std.log.info("{*} {}", .{ xdg_surface, xdg_surface.role });
 
         self.newClient(.{ .XDG = xdg_surface }) catch |err| {
             std.log.err("failed to init client {}", .{err});
@@ -250,13 +274,10 @@ fn newLayerSurfaceClient(self: *Session, surface: *wlr.LayerSurfaceV1) !void {
 fn newClient(self: *Session, surface: Client.ClientSurface) !void {
     std.log.info("process xdg surface create for {}", .{surface});
 
-    const client = try self.config.allocator.create(Client);
-    try client.init(self, surface);
+    try Client.init(self, surface);
     //try client.updateTree(self);
 
-    self.clients.append(client);
-    self.focus_clients.append(client);
-    std.log.info("tracking client {*}", .{client});
+    // std.log.info("tracking client {*}", .{client});
 }
 
 const logger = struct {
@@ -389,7 +410,11 @@ pub fn launch(self: *Session) SessionError!void {
 
     const wl_server = try wl.Server.create();
     const loop = wl_server.getEventLoop();
+
     const backend = try wlr.Backend.autocreate(loop, null);
+    const renderer = try wlr.Renderer.autocreate(backend);
+
+    const compositor = try wlr.Compositor.create(wl_server, 6, renderer);
 
     const scene = try wlr.Scene.create();
 
@@ -407,13 +432,10 @@ pub fn launch(self: *Session) SessionError!void {
         .LyrBlock = try scene.tree.createSceneTree(),
     });
 
-    const renderer = try wlr.Renderer.autocreate(backend);
-
     try renderer.initServer(wl_server);
 
     const allocator = try wlr.Allocator.autocreate(backend, renderer);
 
-    const compositor = try wlr.Compositor.create(wl_server, 6, renderer);
     _ = try wlr.Subcompositor.create(wl_server);
     _ = try wlr.DataDeviceManager.create(wl_server);
     _ = try wlr.ExportDmabufManagerV1.create(wl_server);
@@ -434,19 +456,25 @@ pub fn launch(self: *Session) SessionError!void {
     _ = try wlr.XdgOutputManagerV1.create(wl_server, output_layout);
     backend.events.new_output.add(&self.new_output_event);
 
-    const idle_notifier = try wlr.IdleNotifierV1.create(wl_server);
-    const idle_inhibit_manager = try wlr.IdleInhibitManagerV1.create(wl_server);
-    // TODO: events
+    // todo: locked bg
 
+    const xdg_shell = try wlr.XdgShell.create(wl_server, 5);
+    xdg_shell.events.new_toplevel.add(&self.new_xdg_toplevel_event);
+    xdg_shell.events.new_surface.add(&self.new_xdg_surface_event);
+    xdg_shell.events.new_popup.add(&self.new_xdg_popup_event);
+
+    // TODO: remaining events
     const layer_shell = try wlr.LayerShellV1.create(wl_server, 4);
     layer_shell.events.new_surface.add(&self.new_layer_surface_event);
 
-    // todo: locked bg
+    const idle_notifier = try wlr.IdleNotifierV1.create(wl_server);
 
-    const xdg_shell = try wlr.XdgShell.create(wl_server, 4);
-    xdg_shell.events.new_surface.add(&self.new_xdg_surface_event);
+    const idle_inhibit_manager = try wlr.IdleInhibitManagerV1.create(wl_server);
 
     const session_lock_manager = try wlr.SessionLockManagerV1.create(wl_server);
+
+    // wlr.ServerDecorationManager.create(wl_server).setDefaultMode(.server_side);
+
     const xdg_decoration_manager = try wlr.XdgDecorationManagerV1.create(wl_server);
     xdg_decoration_manager.events.new_toplevel_decoration.add(&self.new_toplevel_decoration_event);
 
@@ -458,14 +486,6 @@ pub fn launch(self: *Session) SessionError!void {
     const output_manager = try wlr.OutputManagerV1.create(wl_server);
     output_manager.events.apply.add(&self.output_manager_apply_event);
     output_manager.events.@"test".add(&self.output_manager_test_event);
-
-    var buf: [11]u8 = undefined;
-    const socket = try wl_server.addSocketAuto(&buf);
-    std.log.info("WAYLAND_DISPLAY: {s}", .{socket});
-    std.log.info("DISPLAY: {s}", .{xwayland.display_name});
-
-    self.config.wayland_display = try std.fmt.allocPrint(self.config.allocator, "{s}", .{socket});
-    self.config.xwayland_display = try std.fmt.allocPrint(self.config.allocator, "{s}", .{xwayland.display_name});
 
     self.wayland_data = .{
         .server = wl_server,
@@ -489,18 +509,26 @@ pub fn launch(self: *Session) SessionError!void {
 
     try self.input.init(self);
 
-    if (std.posix.getenv("HOME")) |home_dir| {
-        const path = try std.mem.concat(self.config.allocator, u8, &.{
-            home_dir,
-            "/.config/",
-            "/budland/budland.conf",
-        });
-        defer self.config.allocator.free(path);
+    if (self.wayland_data) |*data| {
+        var buf: [11]u8 = undefined;
+        const socket = try wl_server.addSocketAuto(&buf);
+        std.log.info("WAYLAND_DISPLAY: {s}", .{socket});
+        std.log.info("DISPLAY: {s}", .{xwayland.display_name});
 
-        try self.config.sourcePath(path);
-    }
+        self.config.wayland_display = try std.fmt.allocPrint(self.config.allocator, "{s}", .{socket});
+        self.config.xwayland_display = try std.fmt.allocPrint(self.config.allocator, "{s}", .{xwayland.display_name});
 
-    if (self.wayland_data) |data| {
+        if (std.posix.getenv("HOME")) |home_dir| {
+            const path = try std.mem.concat(self.config.allocator, u8, &.{
+                home_dir,
+                "/.config/",
+                "/budland/budland.conf",
+            });
+            defer self.config.allocator.free(path);
+
+            try self.config.sourcePath(path);
+        }
+
         try data.backend.start();
 
         try self.config.event(.startup);
