@@ -13,7 +13,7 @@ Budland is a wayland compositor that uses a container system simmilar to tiling.
 
 ## Config
 
-More documentation to come later, for now see [the sample config.](sample.conf)
+More documentation to come later, for now see [the sample config.](docs/sample.conf)
 
 ## Screenshots
 
