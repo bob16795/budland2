@@ -17,4 +17,13 @@ More documentation to come later, for now see [the sample config.](sample.conf)
 
 ## Screenshots
 
-Another work in progress section, I want to get this project stable before I share my sexy setup!
+We have window frames for every environment you can think of!
+
+### Sparse
+![Busy](docs/screenshot3.png)
+
+### Busy
+![Kinda busy](docs/screenshot1.png)
+
+### Busy and Dense
+![Super Busy and Dense](docs/screenshot2.png)
