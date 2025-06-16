@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
     scanner.addSystemProtocol("unstable/pointer-gestures/pointer-gestures-unstable-v1.xml");
     scanner.addSystemProtocol("unstable/xdg-decoration/xdg-decoration-unstable-v1.xml");
 
+    scanner.addCustomProtocol(b.path("protocol/conpositor-ipc-unstable-v1.xml"));
     scanner.addCustomProtocol(b.path("protocol/wlr-layer-shell-unstable-v1.xml"));
 
     // Some of these versions may be out of date with what wlroots implements.
@@ -120,7 +121,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const run_conposoitor_unit_tests = b.addRunArtifact(conpositor_unit_tests);
+    const run_conpositor_unit_tests = b.addRunArtifact(conpositor_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
