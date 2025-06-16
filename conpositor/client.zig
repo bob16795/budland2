@@ -241,10 +241,10 @@ const SHADOW_SIZE = 10;
 fn sharesTabs(self: *const Client, other: *Client) bool {
     return self == other or
         (self.container == other.container and
-        !self.floating and
-        !other.floating and
-        self.tag == other.tag and
-        self.monitor == other.monitor);
+            !self.floating and
+            !other.floating and
+            self.tag == other.tag and
+            self.monitor == other.monitor);
 }
 
 pub fn updateFrame(self: *Client) !void {
@@ -365,7 +365,7 @@ pub fn updateFrame(self: *Client) !void {
 
         const tab_palette = if (tab_client == self and focused) colors[1] else colors[0];
 
-        const label = tab_client.getLabel() orelse "Unknown";
+        const label = tab_client.getLabel();
         const label_extents = context.textExtents(label.ptr);
 
         const label_y_bearing: i32 = @intFromFloat(label_extents.y_bearing);
@@ -451,9 +451,9 @@ pub fn init(session: *Session, target: ClientSurface) !void {
 
                     var box =
                         if (client.monitor) |parent_mon|
-                        parent_mon.window
-                    else
-                        break :client_check;
+                            parent_mon.window
+                        else
+                            break :client_check;
                     box.x -= client.bounds.x;
                     box.y -= client.bounds.y;
 
@@ -610,8 +610,8 @@ pub fn map(self: *Client) !void {
 }
 
 pub fn applyRules(self: *Client) !void {
-    const appid = self.getAppId() orelse "broken";
-    const title = self.getTitle() orelse "broken";
+    const appid = self.getAppId();
+    const title = self.getTitle();
 
     var rule = self.session.config.client_title_rules.get(title);
     rule = self.session.config.client_class_rules.getOver(appid, rule);
@@ -629,37 +629,37 @@ pub fn applyRules(self: *Client) !void {
     std.log.info("rule {s} {s}: {}", .{ appid, title, rule });
 }
 
-pub fn getAppId(self: *Client) ?[]const u8 {
+pub fn getAppId(self: *Client) []const u8 {
     switch (self.surface) {
         .XDG => |surface| {
-            const class = surface.role_data.toplevel.?.app_id orelse return null;
+            const class = surface.role_data.toplevel.?.app_id orelse return "No appid";
 
             return std.mem.span(class);
         },
         .X11 => |surface| {
-            const class = surface.class orelse return null;
+            const class = surface.class orelse return "No appid";
 
             return std.mem.span(class);
         },
     }
 }
 
-pub fn getTitle(self: *Client) ?[]const u8 {
+pub fn getTitle(self: *Client) []const u8 {
     switch (self.surface) {
         .XDG => |surface| {
-            const class = surface.role_data.toplevel.?.title orelse return null;
+            const title = surface.role_data.toplevel.?.title orelse return "No title";
 
-            return std.mem.span(class);
+            return std.mem.span(title);
         },
         .X11 => |surface| {
-            const class = surface.title orelse return null;
+            const title = surface.title orelse return "No title";
 
-            return std.mem.span(class);
+            return std.mem.span(title);
         },
     }
 }
 
-pub fn getLabel(self: *Client) ?[]const u8 {
+pub fn getLabel(self: *Client) []const u8 {
     if (self.label) |label|
         return std.mem.span(label);
 
@@ -962,6 +962,9 @@ pub fn activate(self: *Client) !void {
     if (self.surface != .X11)
         return;
 
+    if (self.monitor) |monitor|
+        monitor.sendFocus();
+
     self.surface.X11.activate(true);
 }
 
@@ -1007,8 +1010,12 @@ pub fn unmap(self: *Client) !void {
         self.session.input.cursor.x,
         self.session.input.cursor.y,
     );
+
     if (objects.client) |client|
         try self.session.focusClient(client, true);
+
+    if (self.session.selmon) |selmon|
+        selmon.sendFocus();
 }
 
 pub fn deinit(self: *Client) void {

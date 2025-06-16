@@ -1,6 +1,9 @@
 const wl = @import("wayland").server.wl;
 const wlr = @import("wlroots");
 const std = @import("std");
+const conpositor = @import("wayland").server.conpositor;
+
+const ipc = @import("ipc.zig");
 
 const LayerSurface = @import("layersurface.zig");
 const Config = @import("config.zig");
@@ -22,8 +25,8 @@ layers: [TOTAL_LAYERS]wl.list.Head(LayerSurface, .link) = undefined,
 tag: usize = 0,
 link: wl.list.Link = undefined,
 layout: usize = 0,
-layout_symbol: []const u8 = "{???}",
 state: wlr.Output.State,
+ipc_status: wl.list.Head(conpositor.IpcOutputV1, null) = undefined,
 
 frame_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.frame),
 deinit_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.deinit),
@@ -88,6 +91,7 @@ pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
         .state = self.state,
     };
 
+    self.ipc_status.init();
     session.wayland_data.?.output_layout.getBox(output, &self.mode);
 
     std.log.info("Create monitor {s} at {}", .{ output.name, mode });
@@ -248,8 +252,6 @@ pub fn arrangeClients(self: *Monitor) !void {
 
     // TODO: activate fullscreen
 
-    self.layout_symbol = config.layouts.items[self.layout].name;
-
     try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
 }
 
@@ -281,8 +283,25 @@ pub fn setTag(self: *Monitor, tag: usize) !void {
     if (self.tag == tag)
         return;
 
+    const old = self.tag;
+
     self.tag = tag;
     try self.arrangeClients();
+
+    var iter = self.ipc_status.iterator(.forward);
+    while (iter.next()) |resource| {
+        inline for (.{ old, self.tag }) |id| {
+            resource.sendTag(
+                @intCast(id),
+                self.session.config.tags.items[id],
+                if (self.tag == id) .active else .none,
+                0,
+                0,
+            );
+        }
+
+        resource.sendFrame();
+    }
 }
 
 pub fn deinit(self: *Monitor) void {
@@ -294,4 +313,71 @@ pub fn deinit(self: *Monitor) void {
         self.session.selmon = null;
 
     self.session.config.allocator.destroy(self);
+}
+
+pub fn addIpc(self: *Monitor, resource: *conpositor.IpcOutputV1) void {
+    resource.sendTags(@intCast(self.session.config.tags.items.len));
+    for (self.session.config.tags.items, 0..) |tag, id| {
+        resource.sendTag(
+            @intCast(id),
+            tag,
+            if (self.tag == id) .active else .none,
+            0,
+            0,
+        );
+    }
+    resource.sendLayout(
+        @intCast(self.layout),
+        self.session.config.layouts.items[self.layout].name,
+    );
+
+    if (self.focusedClient()) |focus| {
+        resource.sendFocus(
+            @ptrCast(focus.getLabel().ptr),
+            focus.icon orelse "",
+            @ptrCast(focus.getTitle().ptr),
+            @ptrCast(focus.getAppId().ptr),
+        );
+    } else {
+        resource.sendClearFocus();
+    }
+
+    resource.sendFrame();
+
+    self.ipc_status.append(resource);
+}
+
+pub fn sendFocus(self: *Monitor) void {
+    var iter = self.ipc_status.iterator(.forward);
+    while (iter.next()) |resource| {
+        if (self.focusedClient()) |focus| {
+            resource.sendFocus(
+                @ptrCast(focus.getLabel().ptr),
+                focus.icon orelse "",
+                @ptrCast(focus.getTitle().ptr),
+                @ptrCast(focus.getAppId().ptr),
+            );
+        } else {
+            resource.sendClearFocus();
+        }
+
+        resource.sendFrame();
+    }
+}
+
+pub fn setLayout(self: *Monitor, layout: usize) !void {
+    if (self.layout == layout)
+        return;
+
+    self.layout = layout;
+    try self.arrangeClients();
+
+    var iter = self.ipc_status.iterator(.forward);
+    while (iter.next()) |resource| {
+        resource.sendLayout(
+            @intCast(self.layout),
+            self.session.config.layouts.items[self.layout].name,
+        );
+        resource.sendFrame();
+    }
 }

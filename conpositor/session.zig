@@ -1,4 +1,5 @@
 const wl = @import("wayland").server.wl;
+const conpositor = @import("wayland").server.conpositor;
 const wlr = @import("wlroots");
 const std = @import("std");
 const xcb = @import("xcb");
@@ -8,6 +9,7 @@ const Monitor = @import("monitor.zig");
 const Client = @import("client.zig");
 const Input = @import("input.zig");
 const LayerSurface = @import("layersurface.zig");
+const IpcOutput = @import("ipc.zig");
 
 const Session = @This();
 
@@ -34,6 +36,7 @@ pub const SessionError = error{
     RendererCreateFailed,
     AllocatorCreateFailed,
     XwaylandCreateFailed,
+    GlobalCreateFailed,
     RenderInitFailed,
     BackendStartFailed,
     AddSocketFailed,
@@ -507,6 +510,8 @@ pub fn launch(self: *Session) SessionError!void {
         .xwayland = xwayland,
     };
 
+    _ = try wl.Global.create(wl_server, conpositor.IpcManagerV1, 1, *Session, self, IpcOutput.managerBind);
+
     try self.input.init(self);
 
     if (self.wayland_data) |*data| {
@@ -522,7 +527,7 @@ pub fn launch(self: *Session) SessionError!void {
             const path = try std.mem.concat(self.config.allocator, u8, &.{
                 home_dir,
                 "/.config/",
-                "/budland/budland.conf",
+                "/conpositor/init.conf",
             });
             defer self.config.allocator.free(path);
 
@@ -690,7 +695,7 @@ pub fn viewAt(session: *Session, lx: f64, ly: f64) ?ViewAtResult {
 }
 
 pub fn quit(self: *Session) void {
-    std.log.info("Quitting budland", .{});
+    std.log.info("Quitting conpositor", .{});
     self.wayland_data.?.server.terminate();
 }
 
@@ -732,6 +737,9 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
 
     client.notifyEnter(input.seat, input.seat.getKeyboard());
     client.activateSurface(true);
+
+    if (self.selmon) |selmon|
+        selmon.sendFocus();
 }
 
 pub fn focusClear(self: *Session) void {
@@ -840,4 +848,9 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
     };
 
     try self.focusClient(target, true);
+}
+
+pub fn addIpc(self: *Session, resource: *conpositor.IpcSessionV1) void {
+    _ = self;
+    _ = resource;
 }

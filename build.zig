@@ -53,6 +53,8 @@ pub fn build(b: *std.Build) void {
 
     scanner.generate("zwlr_layer_shell_v1", 4);
 
+    scanner.generate("conpositor_ipc_manager_v1", 1);
+
     const wayland = b.createModule(.{ .root_source_file = scanner.result });
 
     const xkbcommon = b.dependency("xkbcommon", .{}).module("xkbcommon");
@@ -72,7 +74,7 @@ pub fn build(b: *std.Build) void {
 
     const conpositor = b.addExecutable(.{
         .name = "conpositor",
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("conpositor/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -91,15 +93,26 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(conpositor);
 
+    // IPC utility
+    const conpositormsg = b.addExecutable(.{
+        .name = "conpositor-msg",
+        .root_source_file = b.path("conpositormsg/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    conpositormsg.linkLibC();
+
+    conpositormsg.root_module.addImport("wayland", wayland);
+
+    conpositormsg.linkSystemLibrary("wayland-client");
+
+    b.installArtifact(conpositormsg);
+
     // This *creates* a Run step in the build graph, to be executed when another
     // step is evaluated that depends on it. The next line below will establish
     // such a dependency.
     const run_cmd = b.addRunArtifact(conpositor);
-
-    // By making the run step depend on the install step, it will be run from the
-    // installation directory rather than directly from within the cache directory.
-    // This is not necessary, however, if the application depends on other installed
-    // files, this ensures they will be present and in the expected location.
     run_cmd.step.dependOn(b.getInstallStep());
 
     // This allows the user to pass arguments to the application in the build
@@ -114,9 +127,20 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    // IPC util run step
+    const run_msg = b.addRunArtifact(conpositormsg);
+    run_msg.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_msg.addArgs(args);
+    }
+
+    const run_msg_step = b.step("runmsg", "Run the app");
+    run_msg_step.dependOn(&run_msg.step);
+
     // Creates a step for unit testing. This only builds the test executable
     const conpositor_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("conpositor/main.zig"),
         .target = target,
         .optimize = optimize,
     });

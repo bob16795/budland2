@@ -9,7 +9,7 @@ const Client = @import("client.zig");
 const Config = @This();
 
 pub const ConfigError = error{
-    OpenFileFailed,
+    FileNotFound,
     BadOperationInput,
     UnknownOperation,
     OutOfMemory,
@@ -259,7 +259,7 @@ const Container = struct {
 };
 
 const Layout = struct {
-    name: []const u8,
+    name: [*:0]const u8,
     container: *const Container,
 
     gaps_inner: i32,
@@ -288,7 +288,7 @@ const Layout = struct {
 };
 
 allocator: std.mem.Allocator,
-tags: std.ArrayList([]const u8),
+tags: std.ArrayList([*:0]const u8),
 containers: std.ArrayList(*Container),
 layouts: std.ArrayList(Layout),
 
@@ -335,6 +335,7 @@ const OperationKind = enum {
     default_rule,
     client_rule,
     set_font,
+    set_border,
     source,
     exec,
     auto,
@@ -441,6 +442,12 @@ const Operation = union(OperationKind) {
 
     set_font: struct {
         font: [*:0]const u8,
+    },
+
+    set_border: struct {
+        allocator: std.mem.Allocator,
+
+        size: i32,
     },
 
     source: struct {
@@ -1162,7 +1169,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 active.close();
         },
         .create_tag => |create_tag| {
-            const tag = try self.allocator.dupe(u8, create_tag.value);
+            const tag = try self.allocator.dupeZ(u8, create_tag.value);
             try self.tags.append(tag);
         },
         .focus_tag => |create_tag| {
@@ -1170,7 +1177,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
                 std.log.info("focus {s}", .{create_tag.value});
 
                 for (self.tags.items, 0..) |tag, idx| {
-                    const vis = std.mem.eql(u8, tag, create_tag.value);
+                    const vis = std.mem.eql(u8, std.mem.span(tag), create_tag.value);
 
                     std.log.info("focus {s} {}", .{ tag, vis });
 
@@ -1201,7 +1208,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         .send_tag => |create_tag| {
             if (active_client) |active| {
                 for (self.tags.items, 0..) |tag, idx| {
-                    const vis = std.mem.eql(u8, tag, create_tag.value);
+                    const vis = std.mem.eql(u8, std.mem.span(tag), create_tag.value);
 
                     if (vis) {
                         std.log.info("send {*} {}", .{ active, idx });
@@ -1274,7 +1281,7 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
             if (container == null) return error.BadOperationInput;
 
             try self.layouts.append(.{
-                .name = try self.allocator.dupe(u8, create_layout.name),
+                .name = try self.allocator.dupeZ(u8, create_layout.name),
 
                 .container = container.?,
 
@@ -1368,19 +1375,18 @@ pub fn apply(self: *Config, operation: Operation, session: ?*Session) !void {
         },
         .prev_layout => {
             if ((session orelse return).selmon) |monitor| {
-                if (monitor.layout == 0)
-                    monitor.layout = self.layouts.items.len;
+                var new_layout = monitor.layout;
 
-                monitor.layout -= 1;
+                if (new_layout == 0)
+                    new_layout = self.layouts.items.len;
 
-                try monitor.arrangeClients();
+                new_layout -= 1;
+                try monitor.setLayout(new_layout);
             }
         },
         .next_layout => {
             if ((session orelse return).selmon) |monitor| {
-                monitor.layout = (monitor.layout + 1) % self.layouts.items.len;
-
-                try monitor.arrangeClients();
+                try monitor.setLayout((monitor.layout + 1) % self.layouts.items.len);
             }
         },
         .set_color => |set_color| {
@@ -1455,10 +1461,17 @@ pub fn event(self: *Config, condition: AutoCondition) ConfigError!void {
     }
 }
 
+pub fn run(self: *Config, line: []const u8) !void {
+    const operation = try Operation.parse(self, line);
+    defer operation.deinit();
+
+    try self.apply(operation, null);
+}
+
 pub fn sourcePath(self: *Config, path: []const u8) ConfigError!void {
     const file = std.fs.openFileAbsolute(path, .{}) catch {
         std.log.err("failed to open config file {s}", .{path});
-        return;
+        return error.FileNotFound;
     };
     defer file.close();
 
@@ -1468,18 +1481,9 @@ pub fn sourcePath(self: *Config, path: []const u8) ConfigError!void {
     while (in_stream.readUntilDelimiterOrEofAlloc(self.allocator, '\n', 2048) catch null) |line| {
         defer self.allocator.free(line);
 
-        if (Operation.parse(self, line)) |operation| {
-            defer operation.deinit();
-            self.apply(operation, null) catch |err| {
-                std.log.warn("TODO: config command {s} {!}", .{ line, err });
-                if (err != error.Unimplemented)
-                    return error.BadOperationInput;
-            };
-        } else |err| {
+        self.run(line) catch |err| {
             std.log.warn("Can't parse config command {s} {!}", .{ line, err });
-
-            continue;
-        }
+        };
     }
 }
 
