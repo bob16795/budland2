@@ -45,6 +45,10 @@
             .url = "git+https://github.com/bob16795/zig-wayland#b8086b5f9f7d1aa891faee5dea9077f5afb1de3e",
             .hash = "wayland-0.4.0-dev-lQa1kjXIAQDdp66z4NdKpEYR7QIlXaIh7Ecm5Qz1KeV9",
         },
+        .zlua = .{
+            .url = "git+https://github.com/natecraddock/ziglua#6ec3c8cb61674ea9fddb3d9dcceffc5e0c8231e6",
+            .hash = "zlua-0.1.0-hGRpC-IZBQC5bPuUsNuv9TKPLjZkbI132xCQt0hT_JDJ",
+        },
     },
     .paths = .{""},
 }

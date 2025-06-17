@@ -4,8 +4,11 @@ const std = @import("std");
 
 const Session = @import("session.zig");
 const Monitor = @import("monitor.zig");
+const Config = @import("config.zig");
 
 const LayerSurface = @This();
+
+const allocator = Config.allocator;
 
 const LayerSurfaceEvents = struct {
     map_event: wl.Listener(void) = .init(Listeners.map),
@@ -67,8 +70,6 @@ const Listeners = struct {
 pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !void {
     self.events = .{};
 
-    const wayland_data = session.wayland_data orelse unreachable;
-
     surf.data = @intFromPtr(self);
 
     surf.surface.events.map.add(&self.events.map_event);
@@ -77,7 +78,7 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
     surf.surface.events.destroy.add(&self.events.deinit_event);
 
     const monitor: *Monitor = @ptrFromInt(surf.output.?.data);
-    const parent_scene = wayland_data.layers.get(@enumFromInt(@intFromEnum(surf.pending.layer)));
+    const parent_scene = session.layers.get(@enumFromInt(@intFromEnum(surf.pending.layer)));
     const scene = try parent_scene.createSceneLayerSurfaceV1(surf);
     const scene_tree = scene.tree;
     const popups = try parent_scene.createSceneTree();
@@ -114,15 +115,14 @@ pub fn commit(self: *LayerSurface) !void {
         self.monitor = @ptrFromInt(output.data);
     } else return;
 
-    const wayland_data = self.session.wayland_data orelse unreachable;
-    const lyr = wayland_data.layers.get(@enumFromInt(@intFromEnum(self.surface.current.layer)));
+    const lyr = self.session.layers.get(@enumFromInt(@intFromEnum(self.surface.current.layer)));
     if (lyr != self.scene_tree.node.parent) {
         self.scene_tree.node.reparent(lyr);
         self.popups.node.reparent(lyr);
     }
 
     if (@intFromEnum(self.surface.current.layer) < 2)
-        self.popups.node.reparent(wayland_data.layers.get(.LyrTop));
+        self.popups.node.reparent(self.session.layers.get(.LyrTop));
 
     if (@as(u32, @bitCast(self.surface.current.committed)) == 0 and self.mapped == self.surface.surface.mapped)
         return;
@@ -166,5 +166,5 @@ pub fn deinit(self: *LayerSurface) void {
     self.events.deinit_event.link.remove();
     self.events.commit_event.link.remove();
 
-    self.session.config.allocator.destroy(self);
+    allocator.destroy(self);
 }

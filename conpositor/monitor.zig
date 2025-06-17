@@ -12,6 +12,8 @@ const Client = @import("client.zig");
 
 const Monitor = @This();
 
+const allocator = Config.allocator;
+
 const TOTAL_LAYERS = 4;
 const LAYERS_ABOVE_SHELL = [_]u32{ 3, 2 };
 
@@ -22,9 +24,9 @@ fullscreen_bg: *wlr.SceneRect,
 window: wlr.Box,
 mode: wlr.Box,
 layers: [TOTAL_LAYERS]wl.list.Head(LayerSurface, .link) = undefined,
-tag: usize = 0,
+tag: u8 = 0,
 link: wl.list.Link = undefined,
-layout: usize = 0,
+layout: u8 = 0,
 state: wlr.Output.State,
 ipc_status: wl.list.Head(conpositor.IpcOutputV1, null) = undefined,
 
@@ -48,38 +50,37 @@ const Listeners = struct {
 };
 
 pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
-    const data = &(session.wayland_data orelse return error.SessionNotSetup);
     var output = output_in;
 
-    if (!output.initRender(data.allocator, data.renderer)) {
+    if (!output.initRender(session.wlr_allocator, session.renderer)) {
         return error.DisplayRenderInitFailed;
     }
 
-    const fullscreen_bg = try data.layers.get(.LyrFS).createSceneRect(0, 0, &session.config.colors[0][1]);
+    const fullscreen_bg = try session.layers.get(.LyrFS).createSceneRect(0, 0, session.config.getColor(false, .background));
     fullscreen_bg.node.setEnabled(false);
 
-    var mode: wlr.Box = std.mem.zeroes(wlr.Box);
+    const mode: wlr.Box = std.mem.zeroes(wlr.Box);
 
     self.state = wlr.Output.State.init();
 
-    const rule = (session.config.monitor_rules.get(std.mem.span(output.name)));
+    // const rule = (session.config.monitor_rules.get(std.mem.span(output.name)));
     self.state.setEnabled(true);
-    self.state.setScale(rule.scale.?);
-    self.state.setTransform(rule.transform.?);
+    // self.state.setScale(rule.scale.?);
+    // self.state.setTransform(rule.transform.?);
     self.state.setAdaptiveSyncEnabled(true);
-    mode.x = rule.x.?;
-    mode.y = rule.y.?;
+    // mode.x = rule.x.?;
+    // mode.y = rule.y.?;
 
     if (output.preferredMode()) |pref_mode|
         self.state.setMode(pref_mode);
 
     _ = output.commitState(&self.state);
 
-    const scene_output = try data.scene.createSceneOutput(output);
+    const scene_output = try session.scene.createSceneOutput(output);
     _ = if (mode.x != 0 and mode.y != 0)
-        try data.output_layout.add(output, mode.x, mode.y)
+        try session.output_layout.add(output, mode.x, mode.y)
     else
-        try data.output_layout.addAuto(output);
+        try session.output_layout.addAuto(output);
 
     self.* = .{
         .output = output,
@@ -92,7 +93,7 @@ pub fn init(self: *Monitor, session: *Session, output_in: *wlr.Output) !void {
     };
 
     self.ipc_status.init();
-    session.wayland_data.?.output_layout.getBox(output, &self.mode);
+    session.output_layout.getBox(output, &self.mode);
 
     std.log.info("Create monitor {s} at {}", .{ output.name, mode });
 
@@ -176,7 +177,7 @@ pub fn arrangeLayers(self: *Monitor) !void {
 
 pub fn clientVisible(self: *Monitor, client: *Client) bool {
     return (client.floating or
-        self.session.config.layouts.items[self.layout].container.has(client.container)) and
+        self.session.config.getLayouts()[self.layout].container.has(client.container)) and
         client.monitor == self and self.tag == client.tag;
 }
 
@@ -190,13 +191,14 @@ pub fn focusedClient(self: *Monitor) ?*Client {
 }
 
 pub fn arrangeClients(self: *Monitor) !void {
-    const config = self.session.config;
+    const containers = self.session.config.getContainers();
+    const layouts = self.session.config.getLayouts();
 
-    const usage: []bool = try config.allocator.alloc(bool, config.containers.items.len);
-    defer config.allocator.free(usage);
+    const usage: []bool = try allocator.alloc(bool, containers.len);
+    defer allocator.free(usage);
 
-    const solved: []bool = try config.allocator.alloc(bool, config.containers.items.len);
-    defer config.allocator.free(solved);
+    const solved: []bool = try allocator.alloc(bool, containers.len);
+    defer allocator.free(solved);
     for (solved) |*s| s.* = false;
 
     {
@@ -218,7 +220,7 @@ pub fn arrangeClients(self: *Monitor) !void {
 
     for (solved, 0..) |u, u_idx| {
         if (u) {
-            for (config.containers.items) |con| {
+            for (containers) |con| {
                 usage[con.id] = con.has(@intCast(u_idx)) or usage[con.id];
             }
         }
@@ -232,7 +234,7 @@ pub fn arrangeClients(self: *Monitor) !void {
             if (!client.floating and visible) {
                 const border = if (client.frame.kind == .hide) 0 else client.border;
 
-                const new = config.layouts.items[self.layout].getSize(client.container, self.window, border, usage);
+                const new = layouts[self.layout].getSize(client.container, self.window, border, usage);
 
                 if (border != 0) {
                     client.frame.kind = if (new.y == self.window.y)
@@ -312,12 +314,19 @@ pub fn deinit(self: *Monitor) void {
     if (self.session.selmon == self)
         self.session.selmon = null;
 
-    self.session.config.allocator.destroy(self);
+    allocator.destroy(self);
 }
 
 pub fn addIpc(self: *Monitor, resource: *conpositor.IpcOutputV1) void {
-    resource.sendTags(@intCast(self.session.config.tags.items.len));
-    for (self.session.config.tags.items, 0..) |tag, id| {
+    const tags = self.session.config.getTags();
+    const layouts = self.session.config.getLayouts();
+
+    // TODO: send containers
+    // const containers = self.session.config.getContainers();
+
+    resource.sendTags(@intCast(tags.len));
+
+    for (tags, 0..) |tag, id| {
         resource.sendTag(
             @intCast(id),
             tag,
@@ -328,7 +337,7 @@ pub fn addIpc(self: *Monitor, resource: *conpositor.IpcOutputV1) void {
     }
     resource.sendLayout(
         @intCast(self.layout),
-        self.session.config.layouts.items[self.layout].name,
+        layouts[self.layout].name,
     );
 
     if (self.focusedClient()) |focus| {

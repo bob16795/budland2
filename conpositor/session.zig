@@ -13,6 +13,8 @@ const IpcOutput = @import("ipc.zig");
 
 const Session = @This();
 
+const allocator = Config.allocator;
+
 pub const Layer = enum {
     LyrBg,
     LyrBottom,
@@ -44,29 +46,28 @@ pub const SessionError = error{
     OutOfMemory,
 } || Config.ConfigError;
 
-config: *Config,
+config: Config,
 
-wayland_data: ?struct {
-    server: *wl.Server,
-    backend: *wlr.Backend,
-    scene: *wlr.Scene,
-    renderer: *wlr.Renderer,
-    allocator: *wlr.Allocator,
-    output_layout: *wlr.OutputLayout,
-    output_manager: *wlr.OutputManagerV1,
-    layers: std.EnumArray(Layer, *wlr.SceneTree),
-    xdg_activation: *wlr.XdgActivationV1,
+server: *wl.Server,
+backend: *wlr.Backend,
+scene: *wlr.Scene,
+renderer: *wlr.Renderer,
+wlr_allocator: *wlr.Allocator,
+output_layout: *wlr.OutputLayout,
+output_manager: *wlr.OutputManagerV1,
+layers: std.EnumArray(Layer, *wlr.SceneTree),
+xdg_activation: *wlr.XdgActivationV1,
 
-    idle_notifier: *wlr.IdleNotifierV1,
-    idle_inhibit_manager: *wlr.IdleInhibitManagerV1,
-    layer_shell: *wlr.LayerShellV1,
-    xdg_shell: *wlr.XdgShell,
-    session_lock_manager: *wlr.SessionLockManagerV1,
+idle_notifier: *wlr.IdleNotifierV1,
+idle_inhibit_manager: *wlr.IdleInhibitManagerV1,
+layer_shell: *wlr.LayerShellV1,
+xdg_shell: *wlr.XdgShell,
+session_lock_manager: *wlr.SessionLockManagerV1,
 
-    xdg_decoration_manager: *wlr.XdgDecorationManagerV1,
-    compositor: *wlr.Compositor,
-    xwayland: *wlr.Xwayland,
-} = null,
+xdg_decoration_manager: *wlr.XdgDecorationManagerV1,
+compositor: *wlr.Compositor,
+xwayland: *wlr.Xwayland,
+
 input: Input = undefined,
 
 monitors: wl.list.Head(Monitor, .link) = undefined,
@@ -95,26 +96,25 @@ const FOCUS_ORDER = [_]Layer{
 
 const Listeners = struct {
     pub fn newOutput(listener: *wl.Listener(*wlr.Output), wlr_output: *wlr.Output) void {
-        const session: *Session = @fieldParentPtr("new_output_event", listener);
-        const data = &session.wayland_data.?;
-        if (!wlr_output.initRender(data.allocator, data.renderer)) return;
+        const self: *Session = @fieldParentPtr("new_output_event", listener);
+        if (!wlr_output.initRender(self.wlr_allocator, self.renderer)) return;
 
-        const monitor = session.config.allocator.create(Monitor) catch {
+        const monitor = allocator.create(Monitor) catch {
             std.log.err("failed to allocate new output", .{});
             wlr_output.destroy();
             return;
         };
 
-        monitor.init(session, wlr_output) catch {
+        monitor.init(self, wlr_output) catch {
             std.log.err("failed to allocate new output", .{});
             wlr_output.destroy();
             return;
         };
 
         wlr_output.data = @intFromPtr(monitor);
-        session.monitors.append(monitor);
+        self.monitors.append(monitor);
 
-        session.updateMons() catch |err| {
+        self.updateMons() catch |err| {
             std.log.err("failed to init client {}", .{err});
         };
     }
@@ -134,9 +134,7 @@ const Listeners = struct {
     pub fn xwayland_ready(listener: *wl.Listener(void)) void {
         const self: *Session = @fieldParentPtr("xwayland_ready_event", listener);
 
-        const wayland_data = self.wayland_data.?;
-
-        self.input.xwayland_ready(wayland_data.xwayland);
+        self.input.xwayland_ready(self.xwayland);
     }
 
     pub fn new_toplevel_decoration(listener: *wl.Listener(*wlr.XdgToplevelDecorationV1), decoration: *wlr.XdgToplevelDecorationV1) void {
@@ -200,16 +198,8 @@ const Listeners = struct {
     }
 };
 
-pub fn init(config: *Config) Session {
-    return .{
-        .config = config,
-    };
-}
-
 pub fn deinit(self: *Session) void {
-    const wayland_data = self.wayland_data.?;
-
-    wayland_data.xwayland.destroy();
+    self.xwayland.destroy();
 }
 
 fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.OutputConfigurationV1) void {
@@ -240,7 +230,7 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
             );
 
         if (monitor.mode.x != config_head.state.x or monitor.mode.y != config_head.state.y)
-            _ = monitor.session.wayland_data.?.output_layout.add(monitor.output, config_head.state.x, config_head.state.y) catch {};
+            _ = monitor.session.output_layout.add(monitor.output, config_head.state.x, config_head.state.y) catch {};
 
         monitor.state.setTransform(config_head.state.transform);
         monitor.state.setScale(config_head.state.scale);
@@ -268,7 +258,7 @@ fn newLayerSurfaceClient(self: *Session, surface: *wlr.LayerSurfaceV1) !void {
         return;
     }
 
-    const layer_surface = try self.config.allocator.create(LayerSurface);
+    const layer_surface = try allocator.create(LayerSurface);
     try layer_surface.init(self, surface);
 
     std.log.info("tracking surface {*}", .{layer_surface});
@@ -284,8 +274,6 @@ fn newClient(self: *Session, surface: Client.ClientSurface) !void {
 }
 
 const logger = struct {
-    var allocator: std.mem.Allocator = undefined;
-
     fn readArg(vl: *std.builtin.VaList, comptime T: type) T {
         const T_size = @sizeOf(T);
 
@@ -402,13 +390,7 @@ const logger = struct {
     }
 };
 
-pub fn launch(self: *Session) SessionError!void {
-    self.monitors.init();
-    self.clients.init();
-    self.focus_clients.init();
-
-    logger.allocator = self.config.allocator;
-
+pub fn init() SessionError!Session {
     wlr.log.init(.debug, &logger.log);
 
     const wl_server = try wl.Server.create();
@@ -437,7 +419,7 @@ pub fn launch(self: *Session) SessionError!void {
 
     try renderer.initServer(wl_server);
 
-    const allocator = try wlr.Allocator.autocreate(backend, renderer);
+    const wlr_allocator = try wlr.Allocator.autocreate(backend, renderer);
 
     _ = try wlr.Subcompositor.create(wl_server);
     _ = try wlr.DataDeviceManager.create(wl_server);
@@ -454,48 +436,32 @@ pub fn launch(self: *Session) SessionError!void {
     const xdg_activation = try wlr.XdgActivationV1.create(wl_server);
 
     const output_layout = try wlr.OutputLayout.create(wl_server);
-    output_layout.events.change.add(&self.layout_change_event);
 
     _ = try wlr.XdgOutputManagerV1.create(wl_server, output_layout);
-    backend.events.new_output.add(&self.new_output_event);
 
     // todo: locked bg
 
     const xdg_shell = try wlr.XdgShell.create(wl_server, 5);
-    xdg_shell.events.new_toplevel.add(&self.new_xdg_toplevel_event);
-    xdg_shell.events.new_surface.add(&self.new_xdg_surface_event);
-    xdg_shell.events.new_popup.add(&self.new_xdg_popup_event);
 
     // TODO: remaining events
     const layer_shell = try wlr.LayerShellV1.create(wl_server, 4);
-    layer_shell.events.new_surface.add(&self.new_layer_surface_event);
-
     const idle_notifier = try wlr.IdleNotifierV1.create(wl_server);
-
     const idle_inhibit_manager = try wlr.IdleInhibitManagerV1.create(wl_server);
-
     const session_lock_manager = try wlr.SessionLockManagerV1.create(wl_server);
+    const xdg_decoration_manager = try wlr.XdgDecorationManagerV1.create(wl_server);
+    const xwayland = try wlr.Xwayland.create(wl_server, compositor, false);
+    const output_manager = try wlr.OutputManagerV1.create(wl_server);
 
     // wlr.ServerDecorationManager.create(wl_server).setDefaultMode(.server_side);
 
-    const xdg_decoration_manager = try wlr.XdgDecorationManagerV1.create(wl_server);
-    xdg_decoration_manager.events.new_toplevel_decoration.add(&self.new_toplevel_decoration_event);
+    return .{
+        .config = .{},
 
-    const xwayland = try wlr.Xwayland.create(wl_server, compositor, false);
-
-    xwayland.events.new_surface.add(&self.new_xwayland_surface_event);
-    xwayland.events.ready.add(&self.xwayland_ready_event);
-
-    const output_manager = try wlr.OutputManagerV1.create(wl_server);
-    output_manager.events.apply.add(&self.output_manager_apply_event);
-    output_manager.events.@"test".add(&self.output_manager_test_event);
-
-    self.wayland_data = .{
         .server = wl_server,
         .backend = backend,
         .scene = scene,
         .renderer = renderer,
-        .allocator = allocator,
+        .wlr_allocator = wlr_allocator,
         .output_layout = output_layout,
         .output_manager = output_manager,
         .layers = layers,
@@ -509,40 +475,66 @@ pub fn launch(self: *Session) SessionError!void {
         .xdg_activation = xdg_activation,
         .xwayland = xwayland,
     };
+}
 
-    _ = try wl.Global.create(wl_server, conpositor.IpcManagerV1, 1, *Session, self, IpcOutput.managerBind);
+pub fn attachEvents(self: *Session) !void {
+    self.monitors.init();
+    self.clients.init();
+    self.focus_clients.init();
 
     try self.input.init(self);
 
-    if (self.wayland_data) |*data| {
-        var buf: [11]u8 = undefined;
-        const socket = try wl_server.addSocketAuto(&buf);
-        std.log.info("WAYLAND_DISPLAY: {s}", .{socket});
-        std.log.info("DISPLAY: {s}", .{xwayland.display_name});
+    try self.config.setupLua();
 
-        self.config.wayland_display = try std.fmt.allocPrint(self.config.allocator, "{s}", .{socket});
-        self.config.xwayland_display = try std.fmt.allocPrint(self.config.allocator, "{s}", .{xwayland.display_name});
+    _ = try wl.Global.create(self.server, conpositor.IpcManagerV1, 1, *Session, self, IpcOutput.managerBind);
 
-        if (std.posix.getenv("HOME")) |home_dir| {
-            const path = try std.mem.concat(self.config.allocator, u8, &.{
-                home_dir,
-                "/.config/",
-                "/conpositor/init.conf",
-            });
-            defer self.config.allocator.free(path);
+    self.output_layout.events.change.add(&self.layout_change_event);
 
-            try self.config.sourcePath(path);
-        }
+    self.backend.events.new_output.add(&self.new_output_event);
 
-        try data.backend.start();
+    self.xdg_shell.events.new_toplevel.add(&self.new_xdg_toplevel_event);
+    self.xdg_shell.events.new_surface.add(&self.new_xdg_surface_event);
+    self.xdg_shell.events.new_popup.add(&self.new_xdg_popup_event);
 
-        try self.config.event(.startup);
+    self.layer_shell.events.new_surface.add(&self.new_layer_surface_event);
 
-        self.selmon = self.getObjectsAt(self.input.cursor.x, self.input.cursor.y).monitor;
-        self.input.cursor.setXcursor(self.input.xcursor_manager, "default");
+    self.xdg_decoration_manager.events.new_toplevel_decoration.add(&self.new_toplevel_decoration_event);
 
-        data.server.run();
-    } else return error.SessionNotSetup;
+    self.xwayland.events.new_surface.add(&self.new_xwayland_surface_event);
+    self.xwayland.events.ready.add(&self.xwayland_ready_event);
+
+    self.output_manager.events.apply.add(&self.output_manager_apply_event);
+    self.output_manager.events.@"test".add(&self.output_manager_test_event);
+}
+
+pub fn launch(self: *Session) SessionError!void {
+    var buf: [11]u8 = undefined;
+    const socket = try self.server.addSocketAuto(&buf);
+    std.log.info("WAYLAND_DISPLAY: {s}", .{socket});
+    std.log.info("DISPLAY: {s}", .{self.xwayland.display_name});
+
+    Config.wayland_display = try std.fmt.allocPrintZ(allocator, "{s}", .{socket});
+    Config.xwayland_display = try std.fmt.allocPrintZ(allocator, "{s}", .{self.xwayland.display_name});
+
+    if (std.posix.getenv("HOME")) |home_dir| {
+        const path = try std.mem.concat(allocator, u8, &.{
+            home_dir,
+            "/.config/",
+            "/conpositor/init.lua",
+        });
+        defer allocator.free(path);
+
+        try self.config.sourcePath(path);
+    }
+
+    try self.backend.start();
+
+    try self.config.event(self, .startup);
+
+    self.selmon = self.getObjectsAt(self.input.cursor.x, self.input.cursor.y).monitor;
+    self.input.cursor.setXcursor(self.input.xcursor_manager, "default");
+
+    self.server.run();
 }
 
 fn updateMons(self: *Session) !void {
@@ -559,7 +551,7 @@ fn updateMons(self: *Session) !void {
             const config_head = try wlr.OutputConfigurationV1.Head.create(config, monitor.output);
             config_head.state.enabled = false;
 
-            self.wayland_data.?.output_layout.remove(monitor.output);
+            self.output_layout.remove(monitor.output);
             try monitor.close();
 
             // monitor.window = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
@@ -571,13 +563,13 @@ fn updateMons(self: *Session) !void {
         var iter = self.monitors.iterator(.forward);
         while (iter.next()) |monitor| {
             if (monitor.output.enabled and
-                self.wayland_data.?.output_layout.get(monitor.output) == null)
-                _ = try self.wayland_data.?.output_layout.addAuto(monitor.output);
+                self.output_layout.get(monitor.output) == null)
+                _ = try self.output_layout.addAuto(monitor.output);
         }
     }
 
     var sgeom: wlr.Box = undefined;
-    self.wayland_data.?.output_layout.getBox(null, &sgeom);
+    self.output_layout.getBox(null, &sgeom);
 
     {
         var iter = self.monitors.iterator(.forward);
@@ -587,13 +579,13 @@ fn updateMons(self: *Session) !void {
 
             const config_head = try wlr.OutputConfigurationV1.Head.create(config, monitor.output);
 
-            self.wayland_data.?.output_layout.getBox(monitor.output, &monitor.mode);
+            self.output_layout.getBox(monitor.output, &monitor.mode);
             monitor.window = monitor.mode;
 
             monitor.scene_output.setPosition(monitor.mode.x, monitor.mode.y);
 
             // if (monitor.lock_surface) |lock_surface| {
-            //     const scene_tree = @as(*wlr.SceneTree, @ptrCast(@alignCast(self.wayland_data.?.lock_surface.surface.*.data)));
+            //     const scene_tree = @as(*wlr.SceneTree, @ptrCast(@alignCast(self.lock_surface.surface.*.data)));
             //     scene_tree.node.setPosition(monitor.mode.x, monitor.mode.y);
             //     lock_surface.configure(monitor.mode.width, monitor.mode.height);
             // }
@@ -631,7 +623,7 @@ fn updateMons(self: *Session) !void {
 
     self.input.cursor.move(null, 0, 0);
 
-    self.wayland_data.?.output_manager.setConfiguration(config);
+    self.output_manager.setConfiguration(config);
 }
 
 const ViewAtResult = struct {
@@ -674,7 +666,7 @@ pub fn viewAt(session: *Session, lx: f64, ly: f64) ?ViewAtResult {
     var sx: f64 = undefined;
     var sy: f64 = undefined;
 
-    if (session.wayland_data.?.scene.tree.node.at(lx, ly, &sx, &sy)) |node| {
+    if (session.scene.tree.node.at(lx, ly, &sx, &sy)) |node| {
         if (node.type != .buffer) return null;
 
         const scene_buffer = wlr.SceneBuffer.fromNode(node);
@@ -696,7 +688,7 @@ pub fn viewAt(session: *Session, lx: f64, ly: f64) ?ViewAtResult {
 
 pub fn quit(self: *Session) void {
     std.log.info("Quitting conpositor", .{});
-    self.wayland_data.?.server.terminate();
+    self.server.terminate();
 }
 
 pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
@@ -770,12 +762,10 @@ pub const ObjectData = struct {
 };
 
 pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
-    const wayland_data = self.wayland_data.?;
-
     var result: ObjectData = .{};
 
     for (FOCUS_ORDER) |layer_id| {
-        const layer = wayland_data.layers.get(layer_id);
+        const layer = self.layers.get(layer_id);
         const node = layer.node.at(x, y, &result.surface_x, &result.surface_y);
 
         if (node != null and node.?.type == .buffer) {
@@ -803,7 +793,7 @@ pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
         }
     }
 
-    result.monitor = if (self.wayland_data.?.output_layout.outputAt(x, y)) |output|
+    result.monitor = if (self.output_layout.outputAt(x, y)) |output|
         @as(?*Monitor, @ptrFromInt(output.data))
     else
         null;

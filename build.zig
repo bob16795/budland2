@@ -57,20 +57,21 @@ pub fn build(b: *std.Build) void {
 
     const wayland = b.createModule(.{ .root_source_file = scanner.result });
 
-    const xkbcommon = b.dependency("xkbcommon", .{}).module("xkbcommon");
-    const pixman = b.dependency("pixman", .{}).module("pixman");
-    const wlroots = b.dependency("wlroots", .{}).module("wlroots");
-    const cairo = b.dependency("cairo", .{}).module("cairo");
+    const xkbcommon_dep = b.dependency("xkbcommon", .{});
+    const pixman_dep = b.dependency("pixman", .{});
+    const wlroots_dep = b.dependency("wlroots", .{});
+    const cairo_dep = b.dependency("cairo", .{});
+    const lua_dep = b.dependency("zlua", .{});
 
-    wlroots.addImport("wayland", wayland);
-    wlroots.addImport("xkbcommon", xkbcommon);
-    wlroots.addImport("pixman", pixman);
+    wlroots_dep.module("wlroots").addImport("wayland", wayland);
+    wlroots_dep.module("wlroots").addImport("xkbcommon", xkbcommon_dep.module("xkbcommon"));
+    wlroots_dep.module("wlroots").addImport("pixman", pixman_dep.module("pixman"));
 
     // We need to ensure the wlroots include path obtained from pkg-config is
     // exposed to the wlroots module for @cImport() to work. This seems to be
     // the best way to do so with the current std.Build API.
-    wlroots.resolved_target = target;
-    wlroots.linkSystemLibrary("wlroots-0.18", .{});
+    wlroots_dep.module("wlroots").resolved_target = target;
+    wlroots_dep.module("wlroots").linkSystemLibrary("wlroots-0.18", .{});
 
     const conpositor = b.addExecutable(.{
         .name = "conpositor",
@@ -82,10 +83,11 @@ pub fn build(b: *std.Build) void {
     conpositor.linkLibC();
 
     conpositor.root_module.addImport("wayland", wayland);
-    conpositor.root_module.addImport("xkbcommon", xkbcommon);
-    conpositor.root_module.addImport("wlroots", wlroots);
-    conpositor.root_module.addImport("cairo", cairo);
-    conpositor.root_module.addImport("pixman", pixman);
+    conpositor.root_module.addImport("xkbcommon", xkbcommon_dep.module("xkbcommon"));
+    conpositor.root_module.addImport("wlroots", wlroots_dep.module("wlroots"));
+    conpositor.root_module.addImport("cairo", cairo_dep.module("cairo"));
+    conpositor.root_module.addImport("pixman", pixman_dep.module("pixman"));
+    conpositor.root_module.addImport("zlua", lua_dep.module("zlua"));
 
     conpositor.linkSystemLibrary("wayland-server");
     conpositor.linkSystemLibrary("xkbcommon");

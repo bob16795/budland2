@@ -6,8 +6,11 @@ const cairo = @import("cairo");
 
 const Session = @import("session.zig");
 const Client = @import("client.zig");
+const Config = @import("config.zig");
 
 const Input = @This();
+
+const allocator = Config.allocator;
 
 // TODO: move to config
 const REPEAT_RATE = 25;
@@ -41,7 +44,7 @@ fn cleanMask(mask: wlr.Keyboard.ModifierMask) wlr.Keyboard.ModifierMask {
 }
 
 const Keyboard = struct {
-    input: *Input,
+    session: *Session,
 
     keyboard: *wlr.Keyboard,
     key_repeat_source: *wl.EventSource = undefined,
@@ -52,20 +55,16 @@ const Keyboard = struct {
     modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Listeners.keyboard.modifiers),
 
     pub fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
-        const wayland_data = self.input.session.wayland_data.?;
-
         const keycode = key_data.keycode + 8;
 
         const keysyms = self.keyboard.xkb_state.?.keyGetSyms(keycode);
         const modifier_mask = self.keyboard.getModifiers();
 
-        wayland_data.idle_notifier.notifyActivity(self.input.seat);
+        self.session.idle_notifier.notifyActivity(self.session.input.seat);
 
         var handled = false;
 
-        const config = self.input.session.config;
-
-        if (!self.input.locked and key_data.state == .pressed) {
+        if (!self.session.input.locked and key_data.state == .pressed) {
             for (keysyms) |sym| {
                 const logo_down = if (@import("builtin").mode == .Debug)
                     modifier_mask.alt
@@ -75,16 +74,17 @@ const Keyboard = struct {
                 if (@intFromEnum(sym) == xkb.Keysym.Escape and
                     logo_down and modifier_mask.shift)
                 {
-                    self.input.session.quit();
+                    self.session.quit();
                     handled = true;
                 }
 
-                for (config.binds.items) |bind| {
-                    if (cleanMask(bind.mod) == cleanMask(modifier_mask) and bind.keysym == sym) {
-                        config.apply(bind.operation, self.input.session) catch {};
-                        handled = true;
-                    }
-                }
+                // TODO:
+                // for (config.binds.items) |bind| {
+                //     if (cleanMask(bind.mod) == cleanMask(modifier_mask) and bind.keysym == sym) {
+                //         config.apply(bind.operation, self.input.session) catch {};
+                //         handled = true;
+                //     }
+                // }
             }
         }
 
@@ -120,13 +120,13 @@ const Keyboard = struct {
         if (handled)
             return;
 
-        self.input.seat.setKeyboard(self.keyboard);
-        self.input.seat.keyboardNotifyKey(key_data.time_msec, key_data.keycode, key_data.state);
+        self.session.input.seat.setKeyboard(self.keyboard);
+        self.session.input.seat.keyboardNotifyKey(key_data.time_msec, key_data.keycode, key_data.state);
     }
 
     pub fn modifiers(self: *Keyboard) !void {
-        self.input.seat.setKeyboard(self.keyboard);
-        self.input.seat.keyboardNotifyModifiers(&self.keyboard.modifiers);
+        self.session.input.seat.setKeyboard(self.keyboard);
+        self.session.input.seat.keyboardNotifyModifiers(&self.keyboard.modifiers);
     }
 };
 
@@ -230,9 +230,10 @@ xcursor_image: ?[*:0]const u8 = null,
 relative_pointer_manager: *wlr.RelativePointerManagerV1,
 cursor_shape_manager: *wlr.CursorShapeManagerV1,
 xcursor_manager: *wlr.XcursorManager,
-keyboards: std.ArrayList(*Keyboard),
 seat: *wlr.Seat,
 events: InputEvents,
+
+keyboards: std.ArrayList(*Keyboard) = .init(allocator),
 locked: bool = false,
 
 grab_client: *Client = undefined,
@@ -240,12 +241,10 @@ grab_x: i32 = 0,
 grab_y: i32 = 0,
 
 pub fn init(self: *Input, session: *Session) !void {
-    const wayland_data = session.wayland_data.?;
-
     self.events = .{};
 
     const cursor = try wlr.Cursor.create();
-    cursor.attachOutputLayout(wayland_data.output_layout);
+    cursor.attachOutputLayout(session.output_layout);
 
     cursor.events.motion.add(&self.events.cursor_motion_event);
     cursor.events.motion_absolute.add(&self.events.cursor_motion_absolute_event);
@@ -254,24 +253,23 @@ pub fn init(self: *Input, session: *Session) !void {
     cursor.events.frame.add(&self.events.cursor_frame_event);
 
     const xcursor_manager = try wlr.XcursorManager.create(null, 24);
-    wayland_data.backend.events.new_input.add(&self.events.new_input_event);
+    session.backend.events.new_input.add(&self.events.new_input_event);
 
-    const cursor_shape_manager = try wlr.CursorShapeManagerV1.create(wayland_data.server, 1);
+    const cursor_shape_manager = try wlr.CursorShapeManagerV1.create(session.server, 1);
     cursor_shape_manager.events.request_set_shape.add(&self.events.set_cursor_shape_event);
 
-    const seat = try wlr.Seat.create(wayland_data.server, "seat0");
+    const seat = try wlr.Seat.create(session.server, "seat0");
     seat.events.request_set_cursor.add(&self.events.request_set_cursor_event);
 
     std.log.warn("TODO: virtual keyboards", .{});
 
-    const relative_pointer_manager = try wlr.RelativePointerManagerV1.create(wayland_data.server);
+    const relative_pointer_manager = try wlr.RelativePointerManagerV1.create(session.server);
 
     self.* = .{
         .session = session,
         .cursor = cursor,
         .cursor_mode = .normal,
         .xcursor_manager = xcursor_manager,
-        .keyboards = .init(session.config.allocator),
         .seat = seat,
         .events = self.events,
         .relative_pointer_manager = relative_pointer_manager,
@@ -322,8 +320,6 @@ pub fn motionNotify(
     dx_unaccel: f64,
     dy_unaccel: f64,
 ) MotionError!void {
-    const wayland_data = self.session.wayland_data.?;
-
     const dx = dx_accel;
     const dy = dy_accel;
 
@@ -340,7 +336,7 @@ pub fn motionNotify(
 
         self.cursor.move(device, dx, dy);
 
-        wayland_data.idle_notifier.notifyActivity(self.seat);
+        self.session.idle_notifier.notifyActivity(self.seat);
 
         self.session.selmon = objects.monitor;
     }
@@ -413,9 +409,7 @@ pub fn pointerFocus(self: *Input, target_client: *Client, surface: *wlr.Surface,
 }
 
 pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
-    const wayland_data = self.session.wayland_data.?;
-
-    wayland_data.idle_notifier.notifyActivity(self.seat);
+    self.session.idle_notifier.notifyActivity(self.seat);
 
     switch (button.state) {
         .pressed => handle_press: {
@@ -433,43 +427,46 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
             const keyboard = self.seat.getKeyboard();
             const mods = if (keyboard) |keyb| keyb.getModifiers() else wlr.Keyboard.ModifierMask{};
 
-            for (self.session.config.mouse_binds.items) |b| {
-                if (b.button == button.button and cleanMask(b.mod) == cleanMask(mods)) {
-                    if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
-                        break :handle_press;
+            _ = mods;
 
-                    switch (b.action) {
-                        .move => {
-                            self.grab_client = objects.client orelse
-                                break :handle_press;
+            // TODO:
+            // for (self.session.config.mouse_binds.items) |b| {
+            //     if (b.button == button.button and cleanMask(b.mod) == cleanMask(mods)) {
+            //         if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
+            //             break :handle_press;
 
-                            try self.grab_client.setFloating(true);
-                            self.cursor_mode = .move;
-                            self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x;
-                            self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y;
+            //         switch (b.action) {
+            //             .move => {
+            //                 self.grab_client = objects.client orelse
+            //                     break :handle_press;
 
-                            self.cursor.setXcursor(self.xcursor_manager, "fleur");
-                        },
-                        .resize => {
-                            self.grab_client = objects.client orelse
-                                break :handle_press;
+            //                 try self.grab_client.setFloating(true);
+            //                 self.cursor_mode = .move;
+            //                 self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x;
+            //                 self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y;
 
-                            try self.grab_client.setFloating(true);
-                            self.cursor_mode = .resize;
+            //                 self.cursor.setXcursor(self.xcursor_manager, "fleur");
+            //             },
+            //             .resize => {
+            //                 self.grab_client = objects.client orelse
+            //                     break :handle_press;
 
-                            _ = self.cursor.warp(
-                                null,
-                                @floatFromInt(self.grab_client.bounds.x + self.grab_client.bounds.width),
-                                @floatFromInt(self.grab_client.bounds.y + self.grab_client.bounds.height),
-                            );
+            //                 try self.grab_client.setFloating(true);
+            //                 self.cursor_mode = .resize;
 
-                            self.cursor.setXcursor(self.xcursor_manager, "se-resize");
-                        },
-                    }
+            //                 _ = self.cursor.warp(
+            //                     null,
+            //                     @floatFromInt(self.grab_client.bounds.x + self.grab_client.bounds.width),
+            //                     @floatFromInt(self.grab_client.bounds.y + self.grab_client.bounds.height),
+            //                 );
 
-                    return;
-                }
-            }
+            //                 self.cursor.setXcursor(self.xcursor_manager, "se-resize");
+            //             },
+            //         }
+
+            //         return;
+            //     }
+            // }
         },
         .released => {
             if (!self.locked and self.cursor_mode != .normal and self.cursor_mode != .pressed) {
@@ -497,9 +494,7 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
 }
 
 pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
-    const wayland_data = self.session.wayland_data orelse unreachable;
-
-    wayland_data.idle_notifier.notifyActivity(self.seat);
+    self.session.idle_notifier.notifyActivity(self.seat);
 
     self.seat.pointerNotifyAxis(axis.time_msec, axis.orientation, axis.delta, axis.delta_discrete, axis.source, axis.relative_direction);
 }
@@ -548,12 +543,10 @@ pub fn keyrepeat(keyboard: *Keyboard) c_int {
 pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
     switch (device.type) {
         .keyboard => {
-            const wayland_data = self.session.wayland_data.?;
-
             const wlr_keyboard = device.toKeyboard();
 
-            const keyboard = try self.session.config.allocator.create(Keyboard);
-            keyboard.* = .{ .input = self, .keyboard = wlr_keyboard };
+            const keyboard = try allocator.create(Keyboard);
+            keyboard.* = .{ .session = self.session, .keyboard = wlr_keyboard };
 
             const context = xkb.Context.new(.no_flags) orelse return error.XkbInitFailed;
             defer context.unref();
@@ -570,7 +563,7 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
 
             self.seat.setKeyboard(keyboard.keyboard);
 
-            keyboard.key_repeat_source = try wayland_data.server.getEventLoop().addTimer(*Keyboard, keyrepeat, keyboard);
+            keyboard.key_repeat_source = try self.session.server.getEventLoop().addTimer(*Keyboard, keyrepeat, keyboard);
 
             try self.keyboards.append(keyboard);
         },

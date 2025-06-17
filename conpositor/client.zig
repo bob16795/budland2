@@ -6,8 +6,11 @@ const cairo = @import("cairo");
 const CairoBuffer = @import("cairobuffer.zig");
 const Session = @import("session.zig");
 const Monitor = @import("monitor.zig");
+const Config = @import("config.zig");
 
 const Client = @This();
+
+const allocator = Config.allocator;
 
 const SurfaceKind = enum { XDG, X11 };
 const FrameKind = enum { hide, border, title };
@@ -24,15 +27,15 @@ const ClientFrame = struct {
     buffer_scene: *wlr.SceneBuffer = undefined,
     border_tree: *wlr.SceneTree = undefined,
 
-    pub fn init(kind: FrameKind, color: [4]f32, client: *Client) !ClientFrame {
-        const shadow_scene = client.session.wayland_data.?.layers.get(.LyrFloatShadows);
+    pub fn init(kind: FrameKind, color: *const [4]f32, client: *Client) !ClientFrame {
+        const shadow_scene = client.session.layers.get(.LyrFloatShadows);
 
         var border_tree = try client.scene.createSceneTree();
         var shadow_tree = try shadow_scene.createSceneTree();
 
         var sides: [4]*wlr.SceneRect = undefined;
         for (&sides) |*side| {
-            side.* = try border_tree.createSceneRect(0, 0, &color);
+            side.* = try border_tree.createSceneRect(0, 0, color);
             side.*.node.data = @intFromPtr(client);
         }
 
@@ -42,7 +45,7 @@ const ClientFrame = struct {
             side.*.node.data = @intFromPtr(client);
         }
 
-        const title_buffer = try CairoBuffer.create(client.session.config.allocator, 10, 10, 1.0);
+        const title_buffer = try CairoBuffer.create(allocator, 10, 10, 1.0);
         const locked = title_buffer.base.lock();
 
         return .{
@@ -232,7 +235,7 @@ focus_link: wl.list.Link = undefined,
 // properties
 container: u8 = 0,
 floating: bool = true,
-tag: usize = 0,
+tag: u8 = 0,
 border: i32 = 0,
 
 // TODO: move this to config
@@ -255,10 +258,10 @@ pub fn updateFrame(self: *Client) !void {
         return;
 
     const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
-    self.scene.node.reparent(self.session.wayland_data.?.layers.get(layer));
+    self.scene.node.reparent(self.session.layers.get(layer));
 
     const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
-    self.frame.shadow_tree.node.reparent(self.session.wayland_data.?.layers.get(shadow_layer));
+    self.frame.shadow_tree.node.reparent(self.session.layers.get(shadow_layer));
 
     self.scene.node.setPosition(self.bounds.x, self.bounds.y);
     self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
@@ -297,16 +300,14 @@ pub fn updateFrame(self: *Client) !void {
     if (self.frame.kind != .border and self.frame.kind != .title)
         return;
 
-    const focused = if (self.session.selmon) |selmon|
-        selmon.focusedClient() == self
-    else
-        false;
-
-    const colors = self.session.config.colors;
-    const window_palette = if (focused) colors[1] else colors[0];
+    const border_color =
+        if (self.session.selmon) |selmon|
+            self.session.config.getColor(selmon.focusedClient() == self, .border)
+        else
+            self.session.config.getColor(false, .border);
 
     for (self.frame.sides) |side|
-        side.setColor(&window_palette[0]);
+        side.setColor(border_color);
 
     self.frame.sides[0].setSize(self.bounds.width, self.inner_bounds.y);
     self.frame.sides[1].setSize(self.bounds.width, self.bounds.height - self.inner_bounds.height - self.inner_bounds.y);
@@ -339,7 +340,7 @@ pub fn updateFrame(self: *Client) !void {
     const total_width: i32 = self.bounds.width;
     const total_height: i32 = title_height + self.border * 2;
     const ftab_width: f64 = @as(f64, @floatFromInt(total_width)) / @as(f64, @floatFromInt(totalTabs));
-    const title_pad = self.session.config.title_pad;
+    const title_pad = self.session.config.getTitlePad();
 
     self.frame.title_buffer = try self.frame.title_buffer.resize(
         @intCast(total_width),
@@ -350,8 +351,9 @@ pub fn updateFrame(self: *Client) !void {
     var context = try self.frame.title_buffer.beginContext();
     defer self.frame.title_buffer.endContext(&context);
 
-    context.selectFontFace(self.session.config.font, .normal, .bold);
-    context.setFontSize(@floatFromInt(self.session.config.font_size));
+    const font = self.session.config.getFont();
+    context.selectFontFace(font.face, .normal, .bold);
+    context.setFontSize(@floatFromInt(font.size));
 
     var iter = self.session.clients.iterator(.forward);
     var current_tab: i32 = 0;
@@ -363,7 +365,7 @@ pub fn updateFrame(self: *Client) !void {
         const tab_end: i32 = @intFromFloat(ftab_width * @as(f64, @floatFromInt(current_tab + 1)));
         const tab_width: i32 = tab_end - tab_start;
 
-        const tab_palette = if (tab_client == self and focused) colors[1] else colors[0];
+        const tab_focus = tab_client == self;
 
         const label = tab_client.getLabel();
         const label_extents = context.textExtents(label.ptr);
@@ -377,18 +379,21 @@ pub fn updateFrame(self: *Client) !void {
         const icon_height: i32 = @intFromFloat(icon_extents.height);
         const icon_y_bearing: i32 = @intFromFloat(icon_extents.y_bearing);
 
+        const fg = self.session.config.getColor(tab_focus, .foreground);
+        const bg = self.session.config.getColor(tab_focus, .background);
+
         var fade_pattern = try cairo.Pattern.createLinear(
             @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad - 30),
             @floatFromInt(self.border),
             @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad),
             0,
         );
-        try fade_pattern.addColorStopRgba(0, tab_palette[2][2], tab_palette[2][1], tab_palette[2][0], tab_palette[2][3]);
-        try fade_pattern.addColorStopRgba(1, tab_palette[1][2], tab_palette[1][1], tab_palette[1][0], tab_palette[1][3]);
+        try fade_pattern.addColorStopRgba(0, bg[2], bg[1], bg[0], bg[3]);
+        try fade_pattern.addColorStopRgba(1, fg[2], fg[1], fg[0], fg[3]);
 
         context.setOperator(.source);
 
-        context.setSourceRgba(tab_palette[0][2], tab_palette[0][1], tab_palette[0][0], tab_palette[0][3]);
+        context.setSourceRgba(border_color[2], border_color[1], border_color[0], border_color[3]);
         context.rectangle(
             @floatFromInt(tab_start),
             @floatFromInt(0),
@@ -397,7 +402,7 @@ pub fn updateFrame(self: *Client) !void {
         );
         context.fill();
 
-        context.setSourceRgba(tab_palette[1][2], tab_palette[1][1], tab_palette[1][0], tab_palette[1][3]);
+        context.setSourceRgba(bg[2], bg[1], bg[0], bg[3]);
         context.rectangle(
             @floatFromInt(self.border + tab_start),
             @floatFromInt(self.border),
@@ -408,7 +413,7 @@ pub fn updateFrame(self: *Client) !void {
 
         context.moveTo(
             @floatFromInt(tab_start + self.border + title_pad),
-            @floatFromInt(self.border + title_pad + @divTrunc(self.session.config.font_size - label_height, 2) - label_y_bearing),
+            @floatFromInt(self.border + title_pad + @divTrunc(font.size - label_height, 2) - label_y_bearing),
         );
         context.setSource(&fade_pattern);
         context.textPath(label);
@@ -416,10 +421,10 @@ pub fn updateFrame(self: *Client) !void {
 
         context.moveTo(
             @floatFromInt(tab_start + tab_width - title_pad - icon_width - self.border),
-            @floatFromInt(self.border + title_pad + @divTrunc(self.session.config.font_size - icon_height, 2) - icon_y_bearing),
+            @floatFromInt(self.border + title_pad + @divTrunc(font.size - icon_height, 2) - icon_y_bearing),
         );
         context.textPath(icon);
-        context.setSourceRgba(tab_palette[2][2], tab_palette[2][1], tab_palette[2][0], tab_palette[2][3]);
+        context.setSourceRgba(fg[2], fg[1], fg[0], fg[3]);
         context.fill();
 
         current_tab += 1;
@@ -468,7 +473,7 @@ pub fn init(session: *Session, target: ClientSurface) !void {
             } else if (surface.role == .none)
                 return;
 
-            const client = try session.config.allocator.create(Client);
+            const client = try allocator.create(Client);
             surface.data = @intFromPtr(client);
 
             client.* = .{ .surface = target, .session = session, .managed = true };
@@ -489,7 +494,7 @@ pub fn init(session: *Session, target: ClientSurface) !void {
             return;
         },
         .X11 => |surface| {
-            const client = try session.config.allocator.create(Client);
+            const client = try allocator.create(Client);
             surface.data = @intFromPtr(client);
 
             client.* = .{ .surface = target, .session = session, .managed = !surface.override_redirect };
@@ -536,7 +541,7 @@ pub fn setHints(self: *Client) !void {
 pub fn map(self: *Client) !void {
     std.log.info("map client {*}", .{self});
 
-    self.scene = try self.session.wayland_data.?.layers.get(.LyrTile).createSceneTree();
+    self.scene = try self.session.layers.get(.LyrTile).createSceneTree();
 
     self.scene_surface = switch (self.surface) {
         .XDG => |surface| try self.scene.createSceneXdgSurface(surface),
@@ -588,7 +593,7 @@ pub fn map(self: *Client) !void {
     self.frame = try .init(if (self.managed)
         if (self.floating) .title else .border
     else
-        .hide, self.session.config.colors[0][0], self);
+        .hide, self.session.config.getColor(false, .border), self);
 
     if (self.managed)
         geom = self.applyBounds(geom, true);
@@ -613,20 +618,24 @@ pub fn applyRules(self: *Client) !void {
     const appid = self.getAppId();
     const title = self.getTitle();
 
-    var rule = self.session.config.client_title_rules.get(title);
-    rule = self.session.config.client_class_rules.getOver(appid, rule);
+    _ = appid;
+    _ = title;
 
-    if (rule.tag) |tag| try self.setTag(tag);
-    if (rule.container) |container| try self.setContainer(container);
-    if (rule.border) |border| try self.setBorder(border);
-    if (rule.floating) |floating| try self.setFloating(floating);
-    // TODO: implement these
-    // if (rule.center) |center| self.center = center;
-    // if (rule.fullscreen) |fullscreen| self.fullscreen = fullscreen;
-    if (rule.icon) |icon| try self.setIcon(icon);
-    if (rule.label) |label| try self.setLabel(label);
+    // TODO:
+    // var rule = self.session.config.client_title_rules.get(title);
+    // rule = self.session.config.client_class_rules.getOver(appid, rule);
 
-    std.log.info("rule {s} {s}: {}", .{ appid, title, rule });
+    // if (rule.tag) |tag| try self.setTag(tag);
+    // if (rule.container) |container| try self.setContainer(container);
+    // if (rule.border) |border| try self.setBorder(border);
+    // if (rule.floating) |floating| try self.setFloating(floating);
+    // // TODO: implement these
+    // // if (rule.center) |center| self.center = center;
+    // // if (rule.fullscreen) |fullscreen| self.fullscreen = fullscreen;
+    // if (rule.icon) |icon| try self.setIcon(icon);
+    // if (rule.label) |label| try self.setLabel(label);
+
+    // std.log.info("rule {s} {s}: {}", .{ appid, title, rule });
 }
 
 pub fn getAppId(self: *Client) []const u8 {
@@ -824,20 +833,17 @@ pub inline fn setBorder(self: *Client, border: i32) !void {
 
     self.border = border;
 
-    if (self.border == 0)
-        self.frame.kind = .hide
-    else
-        self.frame.kind = .title;
+    std.log.info("fda", .{});
 
     try self.resize(self.bounds);
 }
 
 pub inline fn setIcon(self: *Client, icon: ?[*:0]const u8) !void {
     if (self.icon) |old_icon|
-        self.session.config.allocator.free(std.mem.span(old_icon));
+        allocator.free(std.mem.span(old_icon));
 
     if (icon) |new_icon|
-        self.icon = self.session.config.allocator.dupeZ(u8, std.mem.span(new_icon)) catch null
+        self.icon = allocator.dupeZ(u8, std.mem.span(new_icon)) catch null
     else
         self.icon = null;
 
@@ -846,17 +852,17 @@ pub inline fn setIcon(self: *Client, icon: ?[*:0]const u8) !void {
 
 pub inline fn setLabel(self: *Client, label: ?[*:0]const u8) !void {
     if (self.label) |old_label|
-        self.session.config.allocator.free(std.mem.span(old_label));
+        allocator.free(std.mem.span(old_label));
 
     if (label) |new_label|
-        self.label = self.session.config.allocator.dupeZ(u8, std.mem.span(new_label)) catch null
+        self.label = allocator.dupeZ(u8, std.mem.span(new_label)) catch null
     else
         self.label = null;
 
     try self.updateFrame();
 }
 
-pub inline fn setTag(self: *Client, tag: usize) !void {
+pub inline fn setTag(self: *Client, tag: u8) !void {
     if (self.tag == tag)
         return;
 
@@ -1039,7 +1045,7 @@ pub fn deinit(self: *Client) void {
         },
     }
 
-    self.session.config.allocator.destroy(self);
+    allocator.destroy(self);
 }
 
 pub fn getSurface(self: *Client) *wlr.Surface {
