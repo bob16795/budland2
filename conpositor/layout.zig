@@ -1,6 +1,12 @@
 const wl = @import("wayland").server.wl;
 const wlr = @import("wlroots");
 const std = @import("std");
+const zlua = @import("zlua");
+
+const Config = @import("config.zig");
+
+const allocator = Config.allocator;
+const Lua = zlua.Lua;
 
 const Layout = @This();
 
@@ -40,15 +46,14 @@ pub const Container = struct {
         }
     };
 
-    name: []const u8,
-    id: u8,
+    stack: ?u8,
 
     size: Size,
 
-    children: []*const Container,
+    children: []Container,
 
     pub fn has(self: *const Container, idx: u8) bool {
-        if (self.id == idx)
+        if (self.stack == idx)
             return true;
 
         for (self.children) |child| {
@@ -60,22 +65,29 @@ pub const Container = struct {
     }
 
     pub fn childrenUsed(self: *const Container, usage: []bool) usize {
-        if (self.children.len == 0)
-            return if (usage[self.id]) 1 else 0;
-
         var result: usize = 0;
+
+        if (self.stack) |stack| {
+            if (usage[stack])
+                result += 1;
+        }
+
         for (self.children) |child| {
-            result += if (usage[child.id]) 1 else 0;
+            if (child.used(usage) != 0)
+                result += 1;
         }
 
         return result;
     }
 
     pub fn used(self: *const Container, usage: []bool) usize {
-        if (self.children.len == 0)
-            return if (usage[self.id]) 1 else 0;
-
         var result: usize = 0;
+
+        if (self.stack) |stack| {
+            if (usage[stack])
+                result += 1;
+        }
+
         for (self.children) |child| {
             result += child.used(usage);
         }
@@ -87,7 +99,7 @@ pub const Container = struct {
         if (!self.has(idx))
             return null;
 
-        if (self.used(usage) == 1) {
+        if (self.stack == idx or self.used(usage) == 1) {
             return .{
                 .x_min = 0.0,
                 .x_max = 1.0,
@@ -112,10 +124,46 @@ pub const Container = struct {
             unreachable;
         }
     }
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !Container {
+        const result = try lua.toUserdata(Container, index);
+        return result.*;
+    }
+
+    pub fn toLua(self: Container, lua: *Lua) !void {
+        const tmp = lua.newUserdata(Container, 0);
+        tmp.* = self;
+
+        lua.setMetatableRegistry("Container");
+    }
+
+    pub fn lua_new(x_min: f64, y_min: f64, x_max: f64, y_max: f64) !Container {
+        return .{
+            .stack = null,
+            .size = .{
+                .x_min = x_min,
+                .x_max = x_max,
+                .y_min = y_min,
+                .y_max = y_max,
+            },
+            .children = &.{},
+        };
+    }
+
+    pub fn lua_set_stack(self: *Container, stack: ?u8) !void {
+        self.stack = stack;
+    }
+
+    pub fn lua_add_child(self: *Container, child: Container) !void {
+        self.children = try allocator.realloc(self.children, self.children.len + 1);
+        self.children[self.children.len - 1] = child;
+
+        std.log.info("child: {}", .{child});
+    }
 };
 
 name: [*:0]const u8,
-container: *const Container,
+container: Container,
 
 gaps_inner: i32,
 gaps_outer: i32,
@@ -138,5 +186,26 @@ pub fn getSize(self: *const Layout, idx: u8, bounds: wlr.Box, border: i32, usage
         .y = result.y + self.gaps_inner,
         .width = result.width - self.gaps_inner * 2 + border,
         .height = result.height - self.gaps_inner * 2 + border,
+    };
+}
+
+pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !Layout {
+    const result = try lua.toUserdata(Layout, index);
+    return result.*;
+}
+
+pub fn toLua(self: Layout, lua: *Lua) !void {
+    const tmp = lua.newUserdata(Layout, 0);
+    tmp.* = self;
+
+    lua.setMetatableRegistry("Layout");
+}
+
+pub fn lua_new(name: [*:0]const u8, container: Container) !Layout {
+    return .{
+        .name = name,
+        .container = container,
+        .gaps_inner = 20,
+        .gaps_outer = 20,
     };
 }

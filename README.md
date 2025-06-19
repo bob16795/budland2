@@ -11,7 +11,7 @@ Conpositor is a wayland compositor that uses a container system simmilar to tili
 
 ## Config
 
-More documentation to come later, for now see [the sample config.](docs/sample.conf)
+More documentation to come later, for now see [the sample config.](docs/init.lua)
 
 ## Screenshots
 

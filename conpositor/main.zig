@@ -5,7 +5,7 @@ const Session = @import("session.zig");
 const Config = @import("config.zig");
 
 pub const std_options = std.Options{
-    // Define logFn to override the std implementation
+    // I wanna share loggers with wayland
     .logFn = Config.conpositorLogFn,
 };
 

@@ -79,9 +79,11 @@ fn handleSessionRequest(
                 return;
             };
 
-            session.config.run(command) catch |err| {
-                resource.sendFail(@errorName(err));
-            };
+            if (session.config.run(command) catch |e|
+                @errorName(e)) |err|
+            {
+                resource.sendFail(err);
+            }
 
             resource.sendSuccess("Ran command");
         },

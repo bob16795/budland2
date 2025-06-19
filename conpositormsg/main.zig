@@ -37,12 +37,15 @@ pub fn main() !void {
         var run_command: std.ArrayList(u8) = .init(allocator);
         defer run_command.deinit();
 
+        var first: bool = true;
         while (idx < std.os.argv.len) : (idx += 1) {
-            if (idx != 1)
+            if (first) {
                 try run_command.appendSlice(" ");
+                first = false;
+            }
             try run_command.appendSlice(std.mem.span(std.os.argv[idx]));
         }
-        const new_command = try allocator.dupeZ(u8, run_command.items);
+        const new_command = try allocator.dupeZ(u8, std.mem.trim(u8, run_command.items, " "));
 
         const handle = try session.runCommand(new_command);
         handle.setListener(?*anyopaque, commandListener, null);
@@ -172,7 +175,6 @@ fn outputListener(_: *conpositor.IpcOutputV1, event: conpositor.IpcOutputV1.Even
 
             statusData.changed.focus = true;
         },
-        // else => std.log.info("event {}", .{event}),
     }
 }
 

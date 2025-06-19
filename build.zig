@@ -61,7 +61,8 @@ pub fn build(b: *std.Build) void {
     const pixman_dep = b.dependency("pixman", .{});
     const wlroots_dep = b.dependency("wlroots", .{});
     const cairo_dep = b.dependency("cairo", .{});
-    const lua_dep = b.dependency("zlua", .{});
+    const lua_dep = b.dependency("zlua", .{
+    .shared=true,});
 
     wlroots_dep.module("wlroots").addImport("wayland", wayland);
     wlroots_dep.module("wlroots").addImport("xkbcommon", xkbcommon_dep.module("xkbcommon"));
@@ -89,6 +90,7 @@ pub fn build(b: *std.Build) void {
     conpositor.root_module.addImport("pixman", pixman_dep.module("pixman"));
     conpositor.root_module.addImport("zlua", lua_dep.module("zlua"));
 
+    conpositor.linkSystemLibrary("lua");
     conpositor.linkSystemLibrary("wayland-server");
     conpositor.linkSystemLibrary("xkbcommon");
     conpositor.linkSystemLibrary("pixman-1");

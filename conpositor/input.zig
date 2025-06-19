@@ -54,6 +54,50 @@ const Keyboard = struct {
     key_event: wl.Listener(*wlr.Keyboard.event.Key) = .init(Listeners.keyboard.key),
     modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Listeners.keyboard.modifiers),
 
+    pub fn handleKey(session: *Session, xkb_state: *xkb.State, mods: wlr.Keyboard.ModifierMask, keycode: xkb.Keycode, comptime shifted: bool) !bool {
+        const keymap = xkb_state.getKeymap();
+        const layout_index = xkb_state.keyGetLayout(keycode);
+
+        const level = xkb_state.keyGetLevel(
+            keycode,
+            layout_index,
+        );
+
+        const keysyms = if (shifted)
+            keymap.keyGetSymsByLevel(
+                keycode,
+                layout_index,
+                level,
+            )
+        else
+            keymap.keyGetSymsByLevel(
+                keycode,
+                layout_index,
+                0,
+            );
+
+        const consumed = xkb_state.keyGetConsumedMods2(keycode, .xkb);
+        const modifier_mask: wlr.Keyboard.ModifierMask = if (shifted)
+            @bitCast(@as(u32, @bitCast(mods)) & ~consumed)
+        else
+            mods;
+
+        for (keysyms) |sym| {
+            if (@import("builtin").mode == .Debug and
+                @intFromEnum(sym) == xkb.Keysym.Escape and
+                modifier_mask.alt and modifier_mask.shift)
+            {
+                session.quit();
+                return true;
+            }
+
+            if (try session.config.keyBind(.{ .mods = cleanMask(modifier_mask), .key = sym }))
+                return true;
+        }
+
+        return false;
+    }
+
     pub fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
         const keycode = key_data.keycode + 8;
 
@@ -62,51 +106,13 @@ const Keyboard = struct {
 
         self.session.idle_notifier.notifyActivity(self.session.input.seat);
 
-        var handled = false;
+        const skip = (self.session.input.locked or key_data.state != .pressed);
 
-        if (!self.session.input.locked and key_data.state == .pressed) {
-            for (keysyms) |sym| {
-                const logo_down = if (@import("builtin").mode == .Debug)
-                    modifier_mask.alt
-                else
-                    modifier_mask.logo;
-
-                if (@intFromEnum(sym) == xkb.Keysym.Escape and
-                    logo_down and modifier_mask.shift)
-                {
-                    self.session.quit();
-                    handled = true;
-                }
-
-                // TODO:
-                // for (config.binds.items) |bind| {
-                //     if (cleanMask(bind.mod) == cleanMask(modifier_mask) and bind.keysym == sym) {
-                //         config.apply(bind.operation, self.input.session) catch {};
-                //         handled = true;
-                //     }
-                // }
-            }
-        }
-
-        // TODO: figure out how I wanna do debug
-        // if (!handled and key_data.state == .pressed) {
-        //     var buffer: [30]u8 = undefined;
-        //     for (keysyms) |keysym| {
-        //         const name_len = keysym.getName(&buffer, buffer.len);
-        //         const name = buffer[0..@intCast(name_len)];
-
-        //         const key_name = try std.mem.concat(self.input.session.config.allocator, u8, &.{
-        //             if (modifier_mask.logo) "Super+" else "",
-        //             if (modifier_mask.ctrl) "Ctrl+" else "",
-        //             if (modifier_mask.alt) "Alt+" else "",
-        //             if (modifier_mask.shift) "Shift+" else "",
-        //             name,
-        //         });
-        //         defer self.input.session.config.allocator.free(key_name);
-
-        //         std.log.info("unhandled key {s}", .{key_name});
-        //     }
-        // }
+        const handled = if (skip)
+            false
+        else
+            (try handleKey(self.session, self.keyboard.xkb_state.?, modifier_mask, keycode, false) or
+                try handleKey(self.session, self.keyboard.xkb_state.?, modifier_mask, keycode, true));
 
         if (handled and self.keyboard.repeat_info.delay > 0) {
             self.modifier_mask = modifier_mask;

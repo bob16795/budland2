@@ -353,7 +353,8 @@ pub fn updateFrame(self: *Client) !void {
 
     const font = self.session.config.getFont();
     context.selectFontFace(font.face, .normal, .bold);
-    context.setFontSize(@floatFromInt(font.size));
+    const size: f64 = @floatFromInt(font.size);
+    context.setFontSize(size);
 
     var iter = self.session.clients.iterator(.forward);
     var current_tab: i32 = 0;
@@ -388,8 +389,8 @@ pub fn updateFrame(self: *Client) !void {
             @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad),
             0,
         );
-        try fade_pattern.addColorStopRgba(0, bg[2], bg[1], bg[0], bg[3]);
-        try fade_pattern.addColorStopRgba(1, fg[2], fg[1], fg[0], fg[3]);
+        try fade_pattern.addColorStopRgba(1, bg[2], bg[1], bg[0], bg[3]);
+        try fade_pattern.addColorStopRgba(0, fg[2], fg[1], fg[0], fg[3]);
 
         context.setOperator(.source);
 
@@ -440,6 +441,12 @@ pub fn updateFrame(self: *Client) !void {
     });
 
     self.frame.buffer_scene.setDestSize(total_width, total_height);
+    self.frame.buffer_scene.node.setEnabled(true);
+}
+
+pub fn setVisible(self: *Client, visible: bool) void {
+    self.scene.node.setEnabled(visible);
+    self.frame.shadow_tree.node.setEnabled(visible);
 }
 
 pub fn init(session: *Session, target: ClientSurface) !void {
@@ -551,10 +558,6 @@ pub fn map(self: *Client) !void {
             return,
     };
 
-    // if (!self.managed) {
-    //     self.scene.reparent();
-    // }
-
     self.scene.node.data = @intFromPtr(self);
     self.scene_surface.node.data = @intFromPtr(self);
 
@@ -615,27 +618,10 @@ pub fn map(self: *Client) !void {
 }
 
 pub fn applyRules(self: *Client) !void {
-    const appid = self.getAppId();
-    const title = self.getTitle();
-
-    _ = appid;
-    _ = title;
-
-    // TODO:
-    // var rule = self.session.config.client_title_rules.get(title);
-    // rule = self.session.config.client_class_rules.getOver(appid, rule);
-
-    // if (rule.tag) |tag| try self.setTag(tag);
-    // if (rule.container) |container| try self.setContainer(container);
-    // if (rule.border) |border| try self.setBorder(border);
-    // if (rule.floating) |floating| try self.setFloating(floating);
-    // // TODO: implement these
-    // // if (rule.center) |center| self.center = center;
-    // // if (rule.fullscreen) |fullscreen| self.fullscreen = fullscreen;
-    // if (rule.icon) |icon| try self.setIcon(icon);
-    // if (rule.label) |label| try self.setLabel(label);
-
-    // std.log.info("rule {s} {s}: {}", .{ appid, title, rule });
+    try self.setBorder(0);
+    try self.setFloating(true);
+    try self.setIcon("?");
+    try self.session.config.applyRules(self);
 }
 
 pub fn getAppId(self: *Client) []const u8 {
@@ -823,8 +809,19 @@ pub inline fn setContainer(self: *Client, container: u8) !void {
 
     self.container = container;
 
+    std.log.info("set container: {}", .{self.container});
+
     if (self.monitor) |m|
         try m.arrangeClients();
+}
+
+pub inline fn setFrame(self: *Client, frame: FrameKind) !void {
+    if (self.frame.kind == frame)
+        return;
+
+    self.frame.kind = frame;
+
+    try self.resize(self.bounds);
 }
 
 pub inline fn setBorder(self: *Client, border: i32) !void {
@@ -832,8 +829,6 @@ pub inline fn setBorder(self: *Client, border: i32) !void {
         return;
 
     self.border = border;
-
-    std.log.info("fda", .{});
 
     try self.resize(self.bounds);
 }
@@ -898,7 +893,7 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
         return;
 
     if (self.floating)
-        self.frame.kind = .title;
+        try self.setFrame(.title);
 }
 
 pub fn updateSize(self: *Client) u32 {
@@ -980,6 +975,8 @@ pub fn unmap(self: *Client) !void {
     }
 
     std.log.info("unmap {*}", .{self});
+
+    try self.setMonitor(null);
 
     if (self.frame.is_init) {
         std.log.info("{}", .{self.frame.title_buffer.base.n_locks});
