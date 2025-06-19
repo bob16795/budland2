@@ -97,7 +97,6 @@ pub fn create(session: *Session, output_in: *wlr.Output) !void {
     std.log.info("Create monitor {s}", .{output.name});
 
     const scene_output = try session.scene.createSceneOutput(output);
-    scene_output.setPosition(0, 0);
 
     const result: *Monitor = try allocator.create(Monitor);
     output.data = @intFromPtr(result);
@@ -119,6 +118,9 @@ pub fn create(session: *Session, output_in: *wlr.Output) !void {
     output.events.destroy.add(&result.deinit_event);
 
     session.monitors.append(result);
+
+    _ = try session.output_layout.add(result.output, result.mode.x, result.mode.y);
+    result.scene_output.setPosition(result.mode.x, result.mode.y);
 
     try session.updateMons();
 }

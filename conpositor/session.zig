@@ -223,6 +223,7 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
         defer state.finish();
 
         state.setEnabled(config_head.state.enabled);
+
         if (config_head.state.enabled) {
             if (config_head.state.mode) |mode|
                 state.setMode(mode)
@@ -232,6 +233,10 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
                     config_head.state.custom_mode.height,
                     config_head.state.custom_mode.refresh,
                 );
+
+            if (monitor.mode.x != config_head.state.x or
+                monitor.mode.y != config_head.state.y)
+                _ = try self.output_layout.add(monitor.output, config_head.state.x, config_head.state.y);
 
             state.setTransform(config_head.state.transform);
             state.setScale(config_head.state.scale);
@@ -244,16 +249,6 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
             ok = ok and wlr_output.commitState(&state);
         }
 
-        self.output_layout.getBox(monitor.output, &monitor.mode);
-        var width: c_int = undefined;
-        var height: c_int = undefined;
-        monitor.output.effectiveResolution(&width, &height);
-        monitor.mode.width = width;
-        monitor.mode.height = height;
-        monitor.window = monitor.mode;
-
-        try monitor.arrangeLayers();
-
         std.log.info("move monitor {*}, {} {}", .{ monitor, monitor.mode, monitor.window });
     }
 
@@ -263,9 +258,9 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
         output_configuration.sendFailed();
     }
 
-    self.input.cursor.move(null, 0, 0);
-
     output_configuration.destroy();
+
+    try self.updateMons();
 }
 
 fn newLayerSurfaceClient(self: *Session, surface: *wlr.LayerSurfaceV1) !void {
@@ -557,6 +552,7 @@ pub fn updateMons(self: *Session) !void {
                 continue;
 
             const config_head = try wlr.OutputConfigurationV1.Head.create(config, monitor.output);
+
             config_head.state.enabled = false;
 
             self.output_layout.remove(monitor.output);
@@ -584,12 +580,12 @@ pub fn updateMons(self: *Session) !void {
 
             const config_head = try wlr.OutputConfigurationV1.Head.create(config, monitor.output);
 
-            if (monitor.mode.x != config_head.state.x or monitor.mode.y != config_head.state.y)
-                _ = monitor.session.output_layout.add(monitor.output, monitor.mode.x, monitor.mode.y) catch {};
-
             self.output_layout.getBox(monitor.output, &monitor.mode);
-            self.output_layout.getBox(monitor.output, &monitor.window);
+            monitor.window = monitor.mode;
+
             monitor.scene_output.setPosition(monitor.mode.x, monitor.mode.y);
+
+            try monitor.arrangeLayers();
 
             // TODO: update fullscreen client
 
