@@ -50,7 +50,7 @@ pub const Container = struct {
 
     size: Size,
 
-    children: []Container,
+    children: []*Container,
 
     pub fn has(self: *const Container, idx: u8) bool {
         if (self.stack == idx)
@@ -125,55 +125,34 @@ pub const Container = struct {
         }
     }
 
-    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !Container {
-        const result = try lua.toUserdata(Container, index);
-        return result.*;
-    }
+    pub fn deinit(self: *Container) void {
+        const old = self.children;
+        self.children = &.{};
 
-    pub fn toLua(self: Container, lua: *Lua) !void {
-        const tmp = lua.newUserdata(Container, 0);
-        tmp.* = self;
-
-        lua.setMetatableRegistry("Container");
-    }
-
-    pub fn lua_new(x_min: f64, y_min: f64, x_max: f64, y_max: f64) !Container {
-        return .{
-            .stack = null,
-            .size = .{
-                .x_min = x_min,
-                .x_max = x_max,
-                .y_min = y_min,
-                .y_max = y_max,
-            },
-            .children = &.{},
-        };
-    }
-
-    pub fn lua_set_stack(self: *Container, stack: ?u8) !void {
-        self.stack = stack;
-    }
-
-    pub fn lua_add_child(self: *Container, child: Container) !void {
-        self.children = try allocator.realloc(self.children, self.children.len + 1);
-        self.children[self.children.len - 1] = child;
-
-        std.log.info("child: {}", .{child});
+        for (old) |*child| {
+            child.*.deinit();
+        }
+        allocator.free(old);
+        allocator.destroy(self);
     }
 };
 
-name: [*:0]const u8,
-container: Container,
+name: [:0]const u8,
+container: *Container,
 
-gaps_inner: i32,
-gaps_outer: i32,
-
-pub fn getSize(self: *const Layout, idx: u8, bounds: wlr.Box, border: i32, usage: []bool) wlr.Box {
+pub fn getSize(
+    self: *const Layout,
+    idx: u8,
+    bounds: wlr.Box,
+    usage: []bool,
+    gaps_inner: i32,
+    gaps_outer: i32,
+) wlr.Box {
     const new_bounds: wlr.Box = .{
-        .x = bounds.x + self.gaps_outer,
-        .y = bounds.y + self.gaps_outer,
-        .width = bounds.width - self.gaps_outer * 2 - border,
-        .height = bounds.height - self.gaps_outer * 2 - border,
+        .x = bounds.x + gaps_outer,
+        .y = bounds.y + gaps_outer,
+        .width = bounds.width - gaps_outer * 2,
+        .height = bounds.height - gaps_outer * 2,
     };
 
     const result = if (self.container.getSize(idx, usage)) |size|
@@ -182,30 +161,14 @@ pub fn getSize(self: *const Layout, idx: u8, bounds: wlr.Box, border: i32, usage
         new_bounds;
 
     return .{
-        .x = result.x + self.gaps_inner,
-        .y = result.y + self.gaps_inner,
-        .width = result.width - self.gaps_inner * 2 + border,
-        .height = result.height - self.gaps_inner * 2 + border,
+        .x = result.x + gaps_inner,
+        .y = result.y + gaps_inner,
+        .width = result.width - gaps_inner * 2,
+        .height = result.height - gaps_inner * 2,
     };
 }
 
-pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !Layout {
-    const result = try lua.toUserdata(Layout, index);
-    return result.*;
-}
-
-pub fn toLua(self: Layout, lua: *Lua) !void {
-    const tmp = lua.newUserdata(Layout, 0);
-    tmp.* = self;
-
-    lua.setMetatableRegistry("Layout");
-}
-
-pub fn lua_new(name: [*:0]const u8, container: Container) !Layout {
-    return .{
-        .name = name,
-        .container = container,
-        .gaps_inner = 20,
-        .gaps_outer = 20,
-    };
+pub fn deinit(self: *Layout) void {
+    self.container.deinit();
+    allocator.free(self.name);
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const zlua = @import("zlua");
 const wlr = @import("wlroots");
 const xkb = @import("xkbcommon");
+const c = @import("c.zig");
 
 const Layout = @import("layout.zig");
 const Session = @import("session.zig");
@@ -21,17 +22,22 @@ pub const ConfigError = error{
     LuaMsgHandler,
 };
 
-var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
+pub var gpa: std.heap.GeneralPurposeAllocator(.{
+    .thread_safe = true,
+    .stack_trace_frames = 15,
+}) = .{};
 pub const allocator = gpa.allocator();
 
-pub var env: std.process.EnvMap = undefined;
-
 const PaletteColor = enum { border, background, foreground };
-const Event = enum { startup };
+const Event = enum { startup, add_monitor };
 
 const FontInfo = struct {
-    face: [*:0]const u8 = "monospace",
+    face: [:0]const u8,
     size: i32 = 12,
+
+    pub fn deinit(self: *FontInfo) void {
+        allocator.free(self.face);
+    }
 };
 
 const BindData = struct {
@@ -39,15 +45,19 @@ const BindData = struct {
     key: xkb.Keysym,
 };
 
-title_pad: i32 = 5,
-font: FontInfo = .{},
+font: FontInfo,
+title_pad: i32 = 3,
 active_colors: std.EnumArray(PaletteColor, [4]f32) = .initFill(.{ 1, 1, 1, 1 }),
 inactive_colors: std.EnumArray(PaletteColor, [4]f32) = .initFill(.{ 1, 1, 1, 1 }),
 layouts: std.ArrayList(Layout) = .init(allocator),
 tags: std.ArrayList([*:0]const u8) = .init(allocator),
 binds: std.AutoHashMap(BindData, i32) = .init(allocator),
+
+// TODO: better structure?
 rules: std.ArrayList(struct { filter: LuaFilter, calls: i32 }) = .init(allocator),
-events: std.EnumArray(Event, ?i32) = .initFill(null),
+
+// TODO: Hash Map
+events: std.ArrayList(struct { event: Event, calls: i32 }) = .init(allocator),
 lua: *Lua = undefined,
 
 const LuaFilter = struct {
@@ -69,29 +79,24 @@ const LuaFilter = struct {
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaFilter {
         _ = lua.getField(index, "title");
         const title = lua.toAny(?[]const u8, -1) catch null;
-        lua.pop(1);
+        defer lua.pop(1);
 
-        _ = lua.getField(index, "appid");
+        _ = lua.getField(index - 1, "appid");
         const appid = lua.toAny(?[]const u8, -1) catch null;
-        lua.pop(1);
+        defer lua.pop(1);
 
         return .{
-            .title = title,
-            .appid = appid,
+            .title = if (title) |new_title| try allocator.dupe(u8, new_title) else null,
+            .appid = if (appid) |new_appid| try allocator.dupe(u8, new_appid) else null,
         };
     }
 
-    pub fn toLua(self: LuaFilter, lua: *Lua) !void {
-        lua.newTable();
-        if (self.title) |title| {
-            lua.pushAny(title);
-            lua.setField(-2, "title");
-        }
+    pub fn deinit(self: *const LuaFilter) void {
+        if (self.title) |title|
+            allocator.free(title);
 
-        if (self.appid) |appid| {
-            lua.pushAny(appid);
-            lua.setField(-2, "appid");
-        }
+        if (self.appid) |appid|
+            allocator.free(appid);
     }
 };
 
@@ -111,7 +116,51 @@ const LuaTag = struct {
     }
 };
 
-const LuaMonitor = struct {
+const LuaContainer = struct {
+    child: *Layout.Container,
+
+    pub fn lua_set_stack(parent: *LuaContainer, stack: ?u8) !void {
+        const self = parent.child;
+
+        self.stack = stack;
+    }
+
+    pub fn lua_add_child(parent: *LuaContainer, x_min: f64, y_min: f64, x_max: f64, y_max: f64) !LuaContainer {
+        const self = parent.child;
+
+        const container = try allocator.create(Layout.Container);
+        container.* = .{
+            .stack = null,
+            .size = .{
+                .x_min = x_min,
+                .x_max = x_max,
+                .y_min = y_min,
+                .y_max = y_max,
+            },
+            .children = &.{},
+        };
+
+        self.children = try allocator.realloc(self.children, self.children.len + 1);
+        self.children[self.children.len - 1] = container;
+
+        std.log.info("child: {}", .{self.children.len - 1});
+        return .{ .child = container };
+    }
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaContainer {
+        const result = try lua.toUserdata(LuaContainer, index);
+        return result.*;
+    }
+
+    pub fn toLua(self: LuaContainer, lua: *Lua) !void {
+        const tmp = lua.newUserdata(LuaContainer, 0);
+        tmp.* = self;
+
+        lua.setMetatableRegistry("Container");
+    }
+};
+
+pub const LuaMonitor = struct {
     child: *Monitor,
 
     pub fn lua_get_tag(self: *LuaMonitor) !LuaTag {
@@ -132,6 +181,14 @@ const LuaMonitor = struct {
         try self.child.setLayout(layout);
 
         std.log.info("set layout {}", .{layout});
+    }
+
+    pub fn lua_set_inner_gaps(self: *LuaMonitor, size: i32) !void {
+        try self.child.setGaps(.inner, size);
+    }
+
+    pub fn lua_set_outer_gaps(self: *LuaMonitor, size: i32) !void {
+        try self.child.setGaps(.outer, size);
     }
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaMonitor {
@@ -166,8 +223,15 @@ const LuaClient = struct {
         try self.child.setTag(tag.id);
     }
 
-    pub fn lua_set_container(self: *LuaClient, container: Layout.Container) !void {
-        if (container.stack) |stack| {
+    pub fn lua_set_stack(self: *LuaClient, stack: u8) !void {
+        try self.child.setContainer(stack);
+        try self.child.setFloating(false);
+
+        std.log.info("set container {}", .{stack});
+    }
+
+    pub fn lua_set_container(self: *LuaClient, container: *LuaContainer) !void {
+        if (container.child.stack) |stack| {
             try self.child.setContainer(stack);
             try self.child.setFloating(false);
 
@@ -221,27 +285,78 @@ const LuaStack = struct {
     }
 };
 
-pub fn spawnThread(argv: [][]const u8) void {
-    _ = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = argv,
-        .env_map = &env,
-    }) catch {};
-    allocator.free(argv);
+// pub fn spawnThread(argv: [][]const u8) void {
+//     defer allocator.free(argv);
+//     std.posix.execve();
+
+//     // const result = std.process.Child.run(.{
+//     //     .allocator = allocator,
+//     //     .argv = argv,
+//     //     .env_map = &env,
+//     // }) catch return;
+//     // allocator.free(result.stdout);
+//     // allocator.free(result.stderr);
+// }
+
+var original_rlimit: ?std.posix.rlimit = null;
+
+// from river:
+// https://github.com/riverwm/river/blob/46f77f30dcce06b7af0ec8dff5ae3e4fbc73176f/river/process.zig
+pub fn cleanupChild() void {
+    if (c.setsid() < 0) unreachable;
+    if (std.posix.system.sigprocmask(std.posix.SIG.SETMASK, &std.posix.sigemptyset(), null) < 0) unreachable;
+
+    const sig_dfl = std.posix.Sigaction{
+        .handler = .{ .handler = std.posix.SIG.DFL },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.PIPE, &sig_dfl, null);
+
+    if (original_rlimit) |original| {
+        std.posix.setrlimit(.NOFILE, original) catch {
+            std.log.err("failed to restore original file descriptor limit for " ++
+                "child process, setrlimit failed", .{});
+        };
+    }
 }
 
-pub fn lua_spawn(name: []const u8, args: [][]const u8) !void {
+pub fn lua_spawn(_: *Config, name: []const u8, args: [][]const u8) !void {
     const new_args = try std.mem.concat(allocator, []const u8, &.{ &.{name}, args });
+    defer allocator.free(new_args);
 
-    const thread = try std.Thread.spawn(
-        .{ .allocator = allocator },
-        spawnThread,
-        .{new_args},
-    );
-    thread.detach();
+    const child_cmd = try std.mem.joinZ(allocator, " ", new_args);
+    defer allocator.free(child_cmd);
+
+    const child_args = [_:null]?[*:0]const u8{ "/bin/sh", "-c", child_cmd, null };
+
+    const pid = std.posix.fork() catch {
+        return error.Other;
+    };
+
+    if (pid == 0) {
+        cleanupChild();
+
+        const pid2 = std.posix.fork() catch c._exit(1);
+        if (pid2 == 0) {
+            std.posix.execveZ("/bin/sh", &child_args, std.c.environ) catch c._exit(1);
+        }
+
+        c._exit(0);
+    }
+
+    // Wait the intermediate child.
+    const ret = std.posix.waitpid(pid, 0);
+    if (!std.posix.W.IFEXITED(ret.status) or
+        (std.posix.W.IFEXITED(ret.status) and std.posix.W.EXITSTATUS(ret.status) != 0))
+    {
+        return error.Other;
+    }
 }
 
 pub fn lua_set_font(self: *Config, face: []const u8, size: f32) !void {
+    self.font.deinit();
+
     self.font = .{
         .face = try allocator.dupeZ(u8, face),
         .size = @intFromFloat(size),
@@ -250,10 +365,21 @@ pub fn lua_set_font(self: *Config, face: []const u8, size: f32) !void {
     std.log.info("set font {}", .{self.font});
 }
 
-pub fn lua_add_layout(self: *Config, layout: Layout) !void {
-    try self.layouts.append(layout);
+pub fn lua_add_layout(self: *Config, name: []const u8) !LuaContainer {
+    const container = try allocator.create(Layout.Container);
 
-    std.log.info("create layout {s}", .{layout.name});
+    container.* = .{
+        .stack = null,
+        .size = .{ .x_min = 0, .x_max = 1, .y_min = 0, .y_max = 1 },
+        .children = &.{},
+    };
+
+    try self.layouts.append(.{
+        .name = try allocator.dupeZ(u8, name),
+        .container = container,
+    });
+
+    return .{ .child = container };
 }
 
 pub fn lua_new_tag(self: *Config, name: [*:0]const u8) !LuaTag {
@@ -265,6 +391,8 @@ pub fn lua_new_tag(self: *Config, name: [*:0]const u8) !LuaTag {
 }
 
 pub fn lua_set_color(self: *Config, active: bool, palette_name: []const u8, color_name: []const u8) !void {
+    const session: *Session = @fieldParentPtr("config", self);
+
     var r: f32 = 1.0;
     var g: f32 = 1.0;
     var b: f32 = 1.0;
@@ -300,6 +428,8 @@ pub fn lua_set_color(self: *Config, active: bool, palette_name: []const u8, colo
         self.active_colors.set(palette, .{ r, g, b, a })
     else
         self.inactive_colors.set(palette, .{ r, g, b, a });
+
+    try session.reloadColors();
 }
 
 pub fn lua_cycle_focus(self: *Config, dir: i32) !void {
@@ -352,10 +482,10 @@ pub fn luaraw_add_hook(lua: *Lua) !i32 {
         _ = lua.pushValue(-2);
         const calls = try lua.ref(-2);
 
-        if (self.events.get(event_id)) |id|
-            lua.unref(-1, id);
-
-        self.events.set(event_id, calls);
+        try self.events.append(.{
+            .event = event_id,
+            .calls = calls,
+        });
     }
 
     return 0;
@@ -489,6 +619,7 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
 
 pub fn setupLua(self: *Config) ConfigError!void {
     const home_dir = std.posix.getenv("HOME") orelse "./";
+    const libs_dir = std.posix.getenv("CONPOSITOR_LIB_DIR") orelse "/usr/lib";
 
     const path: []const u8 = try std.mem.concat(allocator, u8, &.{
         home_dir,
@@ -496,8 +627,15 @@ pub fn setupLua(self: *Config) ConfigError!void {
         home_dir,
         "/.config/conpositor/?;",
         "?;",
-        "?.lua",
+        "?.lua;",
+        libs_dir,
+        "/?.lua;",
+        libs_dir,
+        "/?;",
+        "/usr/lib/lua/?.lua;",
+        "/usr/lib/lua/?;",
     });
+    defer allocator.free(path);
 
     std.log.info("LUA_PATH: {s}", .{path});
 
@@ -513,8 +651,7 @@ pub fn setupLua(self: *Config) ConfigError!void {
     lua.pop(1);
 
     try globalType(lua, Config, "Session");
-    try globalType(self.lua, Layout.Container, "Container");
-    try globalType(self.lua, Layout, "Layout");
+    try globalType(self.lua, LuaContainer, "Container");
     try globalType(self.lua, LuaClient, "Client");
     try globalType(self.lua, LuaMonitor, "Monitor");
     try globalType(self.lua, LuaStack, "Stack");
@@ -651,19 +788,41 @@ pub fn run(self: *Config, command: []const u8) !?[:0]const u8 {
     return null;
 }
 
-pub fn sendEvent(self: *Config, event_id: Event) !void {
+pub fn sendEvent(self: *Config, comptime T: type, event_id: Event, data: T) !void {
     const lua = self.lua;
 
-    if (self.events.get(event_id)) |event_idx| {
-        _ = lua.getMetatableRegistry("Events");
-        defer lua.pop(1);
+    _ = lua.getMetatableRegistry("Events");
+    defer lua.pop(1);
 
-        _ = lua.rawGetIndex(-1, event_idx);
-        lua.protectedCall(.{ .args = 0, .results = 0 }) catch |err| {
+    for (self.events.items) |event| {
+        if (event.event != event_id)
+            continue;
+
+        _ = lua.rawGetIndex(-1, event.calls);
+
+        _ = try lua.pushAny(data);
+        lua.protectedCall(.{ .args = 1, .results = 0 }) catch |err| {
             std.log.err("{s} Error: {s}", .{ @errorName(err), self.lua.toString(-1) catch "unknown" });
             self.lua.pop(1);
         };
     }
+}
+
+pub fn deinit(self: *Config) void {
+    for (self.layouts.items) |*layout|
+        layout.deinit();
+
+    for (self.rules.items) |rule|
+        rule.filter.deinit();
+
+    self.layouts.deinit();
+    self.tags.deinit();
+    self.binds.deinit();
+    self.rules.deinit();
+    self.events.deinit();
+
+    self.lua.deinit();
+    self.font.deinit();
 }
 
 pub fn conpositorLogFn(

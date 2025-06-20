@@ -65,7 +65,7 @@ fn handleSessionRequest(
     session: *Session,
 ) void {
     switch (request) {
-        .destroy => {},
+        .destroy => manager.destroy(),
         .run_command => |req| {
             const command = std.mem.span(req.command);
 
@@ -86,6 +86,7 @@ fn handleSessionRequest(
             }
 
             resource.sendSuccess("Ran command");
+            resource.destroy();
         },
         .get_focused_output => |req| {
             if (session.selmon) |monitor| {
@@ -119,8 +120,7 @@ fn handleOutputRequest(
     request: conpositor.IpcOutputV1.Request,
     _: ?*anyopaque,
 ) void {
-    _ = manager;
     switch (request) {
-        .destroy => {},
+        .destroy => manager.destroy(),
     }
 }

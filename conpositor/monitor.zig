@@ -28,6 +28,8 @@ tag: u8 = 0,
 layout: u8 = 0,
 link: wl.list.Link = undefined,
 ipc_status: wl.list.Head(conpositor.IpcOutputV1, null) = undefined,
+gaps_inner: i32 = 0,
+gaps_outer: i32 = 0,
 
 frame_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.frame),
 deinit_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.deinit),
@@ -123,21 +125,22 @@ pub fn create(session: *Session, output_in: *wlr.Output) !void {
     result.scene_output.setPosition(result.mode.x, result.mode.y);
 
     try session.updateMons();
+    try session.config.sendEvent(Config.LuaMonitor, .add_monitor, .{ .child = result });
 }
 
 pub fn frame(self: *Monitor) !void {
     // TODO:Figure out why this skips
-    //commit: {
-    {
-        // var iter = self.session.clients.iterator(.forward);
-        // while (iter.next()) |client| {
-        //     if (client.resize_serial != 0 and
-        //         self.clientVisible(client) and
-        //         !client.isStopped())
-        //         break :commit;
-        // }
+    commit: {
+        var iter = self.session.clients.iterator(.forward);
+        while (iter.next()) |client| {
+            if (client.resize_serial != 0 and
+                client.managed and
+                client.surface == .XDG and
+                self.clientVisible(client) and
+                !client.isStopped())
+                break :commit;
+        }
 
-        // self.output.commitState(self.state);
         _ = self.scene_output.commit(null);
     }
 
@@ -240,7 +243,13 @@ pub fn arrangeClients(self: *Monitor) !void {
             if (!client.floating and visible) {
                 const border = if (client.frame.kind == .hide) 0 else client.border;
 
-                const new = layouts[self.layout].getSize(client.container, self.window, border, &usage);
+                const new = layouts[self.layout].getSize(
+                    client.container,
+                    self.window,
+                    &usage,
+                    self.gaps_inner,
+                    self.gaps_outer,
+                );
 
                 if (border != 0) {
                     try client.setFrame(if (new.y == self.window.y)
@@ -378,6 +387,20 @@ pub fn sendFocus(self: *Monitor) void {
 
         resource.sendFrame();
     }
+}
+
+pub fn setGaps(self: *Monitor, pos: enum { inner, outer }, gaps: i32) !void {
+    const ptr = switch (pos) {
+        .inner => &self.gaps_inner,
+        .outer => &self.gaps_outer,
+    };
+
+    if (ptr.* == gaps)
+        return;
+
+    ptr.* = gaps;
+
+    try self.arrangeClients();
 }
 
 pub fn setLayout(self: *Monitor, layout: i32) !void {

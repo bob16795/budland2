@@ -55,14 +55,19 @@ pub fn build(b: *std.Build) void {
 
     scanner.generate("conpositor_ipc_manager_v1", 1);
 
-    const wayland = b.createModule(.{ .root_source_file = scanner.result });
+    const wayland = b.createModule(.{
+        .root_source_file = scanner.result,
+        .target = target,
+        .optimize = optimize,
+    });
 
     const xkbcommon_dep = b.dependency("xkbcommon", .{});
     const pixman_dep = b.dependency("pixman", .{});
     const wlroots_dep = b.dependency("wlroots", .{});
     const cairo_dep = b.dependency("cairo", .{});
     const lua_dep = b.dependency("zlua", .{
-    .shared=true,});
+        .shared = true,
+    });
 
     wlroots_dep.module("wlroots").addImport("wayland", wayland);
     wlroots_dep.module("wlroots").addImport("xkbcommon", xkbcommon_dep.module("xkbcommon"));
@@ -72,6 +77,7 @@ pub fn build(b: *std.Build) void {
     // exposed to the wlroots module for @cImport() to work. This seems to be
     // the best way to do so with the current std.Build API.
     wlroots_dep.module("wlroots").resolved_target = target;
+    wlroots_dep.module("wlroots").optimize = optimize;
     wlroots_dep.module("wlroots").linkSystemLibrary("wlroots-0.18", .{});
 
     const conpositor = b.addExecutable(.{
@@ -95,7 +101,16 @@ pub fn build(b: *std.Build) void {
     conpositor.linkSystemLibrary("xkbcommon");
     conpositor.linkSystemLibrary("pixman-1");
 
-    b.installArtifact(conpositor);
+    const lib_step = b.addInstallDirectory(.{
+        .source_dir = b.path("libs"),
+        .install_dir = .lib,
+        .install_subdir = "conpositor",
+    });
+
+    const conpositor_step = b.addInstallArtifact(conpositor, .{});
+    conpositor_step.step.dependOn(&lib_step.step);
+
+    b.getInstallStep().dependOn(&conpositor_step.step);
 
     // IPC utility
     const conpositormsg = b.addExecutable(.{
@@ -118,6 +133,11 @@ pub fn build(b: *std.Build) void {
     // such a dependency.
     const run_cmd = b.addRunArtifact(conpositor);
     run_cmd.step.dependOn(b.getInstallStep());
+
+    run_cmd.setEnvironmentVariable(
+        "CONPOSITOR_LIB_DIR",
+        b.getInstallPath(.lib, ""),
+    );
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`

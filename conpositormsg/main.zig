@@ -139,9 +139,13 @@ fn outputListener(_: *conpositor.IpcOutputV1, event: conpositor.IpcOutputV1.Even
     switch (event) {
         .frame => {
             writeOutput() catch @panic("stdout write failed");
+
+            std.posix.exit(0);
         },
         .tags => |tags| {
             statusData.tags = allocator.alloc([*:0]const u8, tags.amount) catch &.{};
+
+            statusData.changed.tags = true;
         },
         .toggle_visibility => {},
         .active => {},

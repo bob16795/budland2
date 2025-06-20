@@ -14,6 +14,9 @@ const ConpositorError = Session.SessionError ||
     Config.ConfigError;
 
 pub fn main() ConpositorError!void {
+    defer if (Config.gpa.deinit() == .ok)
+        std.log.debug("no leaks! :)", .{});
+
     var session: Session = try .init();
     defer session.deinit();
 

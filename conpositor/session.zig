@@ -3,6 +3,7 @@ const conpositor = @import("wayland").server.conpositor;
 const wlr = @import("wlroots");
 const std = @import("std");
 const xcb = @import("xcb");
+const c = @import("c.zig");
 
 const Config = @import("config.zig");
 const Monitor = @import("monitor.zig");
@@ -195,9 +196,12 @@ const Listeners = struct {
 };
 
 pub fn deinit(self: *Session) void {
-    self.server.terminate();
-
     self.server.destroyClients();
+
+    self.config.deinit();
+
+    self.xwayland.destroy();
+
     self.backend.destroy();
 
     self.renderer.destroy();
@@ -206,7 +210,6 @@ pub fn deinit(self: *Session) void {
     self.scene.tree.node.destroy();
 
     self.server.destroy();
-    self.xwayland.destroy();
 }
 
 fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.OutputConfigurationV1) !void {
@@ -407,7 +410,7 @@ const logger = struct {
 };
 
 pub fn init() SessionError!Session {
-    wlr.log.init(.debug, &logger.log);
+    // wlr.log.init(.debug, &logger.log);
 
     const wl_server = try wl.Server.create();
     const loop = wl_server.getEventLoop();
@@ -468,7 +471,9 @@ pub fn init() SessionError!Session {
     const output_manager = try wlr.OutputManagerV1.create(wl_server);
 
     return .{
-        .config = .{},
+        .config = .{
+            .font = .{ .face = try allocator.dupeZ(u8, "monospace") },
+        },
 
         .server = wl_server,
         .backend = backend,
@@ -524,15 +529,14 @@ pub fn launch(self: *Session) SessionError!void {
     var buf: [11]u8 = undefined;
     const socket = try self.server.addSocketAuto(&buf);
 
-    Config.env = try std.process.getEnvMap(Config.allocator);
-    try Config.env.put("WAYLAND_DISPLAY", socket);
-    try Config.env.put("DISPLAY", std.mem.span(self.xwayland.display_name));
+    _ = c.setenv("WAYLAND_DISPLAY", socket, 1);
+    _ = c.setenv("DISPLAY", self.xwayland.display_name, 1);
 
     try self.config.sourcePath("init.lua");
 
     try self.backend.start();
 
-    try self.config.sendEvent(.startup);
+    try self.config.sendEvent(?*anyopaque, .startup, null);
 
     self.selmon = self.getObjectsAt(self.input.cursor.x, self.input.cursor.y).monitor;
     self.input.cursor.setXcursor(self.input.xcursor_manager, "default");
@@ -704,7 +708,7 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
     self.focus_clients.prepend(client);
 
     self.selmon = client.monitor;
-    if (client.surface == .X11) {
+    if (client.surface == .X11 and client.managed) {
         client.surface.X11.restack(null, .above);
     }
 
@@ -721,6 +725,9 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
 
     client.notifyEnter(input.seat, input.seat.getKeyboard());
     client.activateSurface(true);
+
+    client.scene.node.raiseToTop();
+    client.frame.shadow_tree.node.raiseToTop();
 
     if (self.selmon) |selmon|
         selmon.sendFocus();
@@ -827,6 +834,12 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
     };
 
     try self.focusClient(target, true);
+}
+
+pub fn reloadColors(self: *Session) !void {
+    var iter = self.monitors.iterator(.forward);
+    while (iter.next()) |monitor|
+        try monitor.arrangeLayers();
 }
 
 pub fn addIpc(self: *Session, resource: *conpositor.IpcSessionV1) void {

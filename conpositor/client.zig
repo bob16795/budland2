@@ -257,15 +257,6 @@ pub fn updateFrame(self: *Client) !void {
     if (self.isStopped())
         return;
 
-    const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
-    self.scene.node.reparent(self.session.layers.get(layer));
-
-    const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
-    self.frame.shadow_tree.node.reparent(self.session.layers.get(shadow_layer));
-
-    self.scene.node.setPosition(self.bounds.x, self.bounds.y);
-    self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
-
     const clip: wlr.Box = .{
         .x = 0,
         .y = 0,
@@ -290,12 +281,29 @@ pub fn updateFrame(self: *Client) !void {
         self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
     }
 
-    self.frame.shadow_tree.node.setPosition(self.bounds.x + self.bounds.width, self.bounds.y + self.bounds.height);
-    self.frame.shadow[0].node.setPosition(0, -self.bounds.height + SHADOW_SIZE);
-    self.frame.shadow[1].node.setPosition(-self.bounds.width + SHADOW_SIZE, 0);
+    if (self.managed) {
+        const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
+        self.scene.node.reparent(self.session.layers.get(layer));
 
-    self.frame.shadow[0].setSize(SHADOW_SIZE, self.bounds.height);
-    self.frame.shadow[1].setSize(self.bounds.width - SHADOW_SIZE, SHADOW_SIZE);
+        const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
+        self.frame.shadow_tree.node.reparent(self.session.layers.get(shadow_layer));
+
+        self.scene.node.setPosition(self.bounds.x, self.bounds.y);
+        self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
+
+        self.frame.shadow_tree.node.setPosition(self.bounds.x + self.bounds.width, self.bounds.y + self.bounds.height);
+        self.frame.shadow[0].node.setPosition(0, -self.bounds.height + SHADOW_SIZE);
+        self.frame.shadow[1].node.setPosition(-self.bounds.width + SHADOW_SIZE, 0);
+
+        self.frame.shadow[0].setSize(SHADOW_SIZE, self.bounds.height);
+        self.frame.shadow[1].setSize(self.bounds.width - SHADOW_SIZE, SHADOW_SIZE);
+    } else {
+        self.bounds.x = self.surface.X11.x;
+        self.bounds.y = self.surface.X11.y;
+
+        self.scene.node.reparent(self.session.layers.get(.LyrFloat));
+        self.scene.node.setPosition(self.bounds.x, self.bounds.y);
+    }
 
     if (self.frame.kind != .border and self.frame.kind != .title)
         return;
@@ -352,7 +360,7 @@ pub fn updateFrame(self: *Client) !void {
     defer self.frame.title_buffer.endContext(&context);
 
     const font = self.session.config.getFont();
-    context.selectFontFace(font.face, .normal, .bold);
+    context.selectFontFace(@ptrCast(font.face), .normal, .bold);
     const size: f64 = @floatFromInt(font.size);
     context.setFontSize(size);
 
@@ -446,7 +454,7 @@ pub fn updateFrame(self: *Client) !void {
 
 pub fn setVisible(self: *Client, visible: bool) void {
     self.scene.node.setEnabled(visible);
-    self.frame.shadow_tree.node.setEnabled(visible);
+    self.frame.shadow_tree.node.setEnabled(visible and self.managed);
 }
 
 pub fn init(session: *Session, target: ClientSurface) !void {
@@ -606,12 +614,14 @@ pub fn map(self: *Client) !void {
     self.session.clients.append(self);
     self.session.focus_clients.append(self);
 
-    try self.session.focusClient(self, true);
+    if (self.managed)
+        try self.session.focusClient(self, true)
+    else
+        self.activateSurface(true);
 
     if (self.floating)
-        try self.resize(geom);
-
-    if (self.monitor) |m|
+        try self.resize(geom)
+    else if (self.monitor) |m|
         try m.arrangeClients();
 
     try self.updateFrame();
@@ -773,6 +783,8 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
 }
 
 pub fn resize(self: *Client, in_target_bounds: wlr.Box) !void {
+    self.inner_bounds = self.applyBounds(in_target_bounds, false);
+
     self.bounds = self.applyBounds(in_target_bounds, false);
 
     const title_height = self.session.config.getTitleHeight();
@@ -819,7 +831,10 @@ pub inline fn setFrame(self: *Client, frame: FrameKind) !void {
     if (self.frame.kind == frame)
         return;
 
-    self.frame.kind = frame;
+    if (self.managed)
+        self.frame.kind = frame
+    else
+        self.frame.kind = .hide;
 
     try self.resize(self.bounds);
 }
@@ -925,21 +940,16 @@ pub fn updateSize(self: *Client) u32 {
 }
 
 pub fn commit(self: *Client) !void {
-    if (self.getSurface().mapped) {
+    if (self.getSurface().mapped)
         try self.resize(self.bounds);
-
-        if (self.monitor) |m|
-            try m.arrangeClients();
-    }
 
     switch (self.surface) {
         .XDG => |surface| {
             if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
                 self.resize_serial = 0;
         },
-        .X11 => |surface| {
-            if (self.resize_serial != 0 and self.resize_serial <= surface.serial)
-                self.resize_serial = 0;
+        .X11 => {
+            self.resize_serial = 0;
         },
     }
 }
@@ -1019,6 +1029,9 @@ pub fn unmap(self: *Client) !void {
 
     if (self.session.selmon) |selmon|
         selmon.sendFocus();
+
+    try self.setIcon(null);
+    try self.setLabel(null);
 }
 
 pub fn deinit(self: *Client) void {

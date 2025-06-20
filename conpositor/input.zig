@@ -13,8 +13,8 @@ const Input = @This();
 const allocator = Config.allocator;
 
 // TODO: move to config
-const REPEAT_RATE = 25;
-const REPEAT_DELAY = 600;
+const REPEAT_RATE = 50;
+const REPEAT_DELAY = 300;
 
 const CursorMode = enum {
     normal,
@@ -50,9 +50,11 @@ const Keyboard = struct {
     key_repeat_source: *wl.EventSource = undefined,
     keysyms: []const xkb.Keysym = &.{},
     modifier_mask: wlr.Keyboard.ModifierMask = .{},
+    link: wl.list.Link = undefined,
 
     key_event: wl.Listener(*wlr.Keyboard.event.Key) = .init(Listeners.keyboard.key),
     modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Listeners.keyboard.modifiers),
+    destroy_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.keyboard.destroy),
 
     pub fn handleKey(session: *Session, xkb_state: *xkb.State, mods: wlr.Keyboard.ModifierMask, keycode: xkb.Keycode, comptime shifted: bool) !bool {
         const keymap = xkb_state.getKeymap();
@@ -101,7 +103,6 @@ const Keyboard = struct {
     pub fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
         const keycode = key_data.keycode + 8;
 
-        const keysyms = self.keyboard.xkb_state.?.keyGetSyms(keycode);
         const modifier_mask = self.keyboard.getModifiers();
 
         self.session.idle_notifier.notifyActivity(self.session.input.seat);
@@ -114,6 +115,7 @@ const Keyboard = struct {
             (try handleKey(self.session, self.keyboard.xkb_state.?, modifier_mask, keycode, false) or
                 try handleKey(self.session, self.keyboard.xkb_state.?, modifier_mask, keycode, true));
 
+        const keysyms = self.keyboard.xkb_state.?.keyGetSyms(keycode);
         if (handled and self.keyboard.repeat_info.delay > 0) {
             self.modifier_mask = modifier_mask;
             self.keysyms = keysyms;
@@ -133,6 +135,16 @@ const Keyboard = struct {
     pub fn modifiers(self: *Keyboard) !void {
         self.session.input.seat.setKeyboard(self.keyboard);
         self.session.input.seat.keyboardNotifyModifiers(&self.keyboard.modifiers);
+    }
+
+    pub fn deinit(self: *Keyboard) !void {
+        self.key_repeat_source.remove();
+        self.link.remove();
+        self.key_event.link.remove();
+        self.modifiers_event.link.remove();
+        self.destroy_event.link.remove();
+
+        allocator.destroy(self);
     }
 };
 
@@ -225,6 +237,14 @@ const Listeners = struct {
                 @panic(@errorName(ex));
             };
         }
+
+        pub fn destroy(listener: *wl.Listener(*wlr.InputDevice), _: *wlr.InputDevice) void {
+            const self: *Keyboard = @fieldParentPtr("destroy_event", listener);
+
+            self.deinit() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
     };
 };
 
@@ -239,7 +259,7 @@ xcursor_manager: *wlr.XcursorManager,
 seat: *wlr.Seat,
 events: InputEvents,
 
-keyboards: std.ArrayList(*Keyboard) = .init(allocator),
+keyboards: wl.list.Head(Keyboard, .link) = undefined,
 locked: bool = false,
 
 grab_client: *Client = undefined,
@@ -281,6 +301,8 @@ pub fn init(self: *Input, session: *Session) !void {
         .relative_pointer_manager = relative_pointer_manager,
         .cursor_shape_manager = cursor_shape_manager,
     };
+
+    self.keyboards.init();
 }
 
 pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
@@ -566,12 +588,13 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
 
             keyboard.keyboard.events.key.add(&keyboard.key_event);
             keyboard.keyboard.events.modifiers.add(&keyboard.modifiers_event);
+            keyboard.keyboard.base.events.destroy.add(&keyboard.destroy_event);
 
             self.seat.setKeyboard(keyboard.keyboard);
 
             keyboard.key_repeat_source = try self.session.server.getEventLoop().addTimer(*Keyboard, keyrepeat, keyboard);
 
-            try self.keyboards.append(keyboard);
+            self.keyboards.append(keyboard);
         },
         .pointer => {
             // std.log.warn("TODO: libinput", .{});
@@ -586,7 +609,7 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
     var caps: wl.Seat.Capability = .{
         .pointer = true,
     };
-    if (self.keyboards.items.len != 0)
+    if (!self.keyboards.empty())
         caps.keyboard = true;
 
     self.seat.setCapabilities(caps);
