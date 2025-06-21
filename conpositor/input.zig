@@ -308,8 +308,8 @@ pub fn init(self: *Input, session: *Session) !void {
 pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
     xwayland.setSeat(self.seat);
 
-    self.xcursor_image = "left_ptr";
-    if (self.xcursor_manager.getXcursor("left_ptr", 1)) |xcursor| {
+    self.xcursor_image = "default";
+    if (self.xcursor_manager.getXcursor("default", 1)) |xcursor| {
         xwayland.setCursor(
             xcursor.images[0].buffer,
             xcursor.images[0].width * 4,

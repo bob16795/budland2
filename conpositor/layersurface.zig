@@ -20,7 +20,7 @@ const LayerSurfaceEvents = struct {
 surface_id: u8 = 25,
 
 session: *Session,
-monitor: *Monitor,
+monitor: ?*Monitor,
 events: LayerSurfaceEvents,
 
 surface: *wlr.LayerSurfaceV1,
@@ -101,7 +101,7 @@ pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !
     const old_state = surf.current;
     surf.current = surf.pending;
     self.mapped = true;
-    try self.monitor.arrangeLayers();
+    try monitor.arrangeLayers();
     surf.current = old_state;
 }
 
@@ -129,7 +129,8 @@ pub fn commit(self: *LayerSurface) !void {
 
     self.mapped = self.surface.surface.mapped;
 
-    try self.monitor.arrangeLayers();
+    if (self.monitor) |m|
+        try m.arrangeLayers();
 }
 
 pub fn notifyEnter(self: *LayerSurface, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
@@ -148,8 +149,8 @@ pub fn unmap(self: *LayerSurface) !void {
         self.session.exclusive_focus = null;
 
     self.monitor = @ptrFromInt(self.surface.output.?.data);
-    if (self.surface.output.?.data != 0)
-        try self.monitor.arrangeLayers();
+    if (self.monitor) |m|
+        try m.arrangeLayers();
 
     self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
 }
@@ -159,7 +160,8 @@ pub fn deinit(self: *LayerSurface) void {
 
     self.link.remove();
 
-    self.monitor.arrangeLayers() catch {};
+    if (self.monitor) |m|
+        m.arrangeLayers() catch {};
 
     self.events.map_event.link.remove();
     self.events.unmap_event.link.remove();

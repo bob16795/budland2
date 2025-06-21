@@ -461,28 +461,42 @@ pub fn init(session: *Session, target: ClientSurface) !void {
     switch (target) {
         .XDG => |surface| {
             if (surface.role == .popup) {
-                if (surface.role_data.popup.?.parent == null)
+                const objects = session.getSurfaceObjects(surface.surface);
+
+                if (surface.role_data.popup.?.parent == null or
+                    (objects.client == null and objects.layer_surface == null))
                     return;
 
-                client_check: {
-                    const client = session.getClient(surface.surface) orelse break :client_check;
-                    const new_surface = try client.scene_surface.createSceneXdgSurface(surface);
-                    surface.surface.data = @intFromPtr(new_surface);
+                const parent: *wlr.SceneTree = @ptrFromInt(surface.role_data.popup.?.parent.?.data);
+                const new_surface = try parent.createSceneXdgSurface(surface);
+                surface.surface.data = @intFromPtr(new_surface);
 
-                    var box =
-                        if (client.monitor) |parent_mon|
-                            parent_mon.window
-                        else
-                            break :client_check;
-                    box.x -= client.bounds.x;
-                    box.y -= client.bounds.y;
-
-                    surface.role_data.popup.?.unconstrainFromBox(&client.bounds);
-
+                if ((objects.client != null and objects.client.?.monitor == null) or
+                    (objects.layer_surface != null and objects.layer_surface.?.monitor == null))
                     return;
-                }
 
-                std.log.err("failed to create client", .{});
+                var box =
+                    if (objects.client) |client|
+                        client.monitor.?.window
+                    else if (objects.layer_surface) |layer_surface|
+                        layer_surface.monitor.?.mode
+                    else
+                        unreachable;
+
+                box.x -= if (objects.client) |client|
+                    client.bounds.x + client.inner_bounds.x
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.bounds.x
+                else
+                    unreachable;
+                box.y -= if (objects.client) |client|
+                    client.bounds.y + client.inner_bounds.y
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.bounds.y
+                else
+                    unreachable;
+
+                surface.role_data.popup.?.unconstrainFromBox(&box);
 
                 return;
             } else if (surface.role == .none)
@@ -495,12 +509,15 @@ pub fn init(session: *Session, target: ClientSurface) !void {
 
             std.log.info("add xdg surface {*} to {*}", .{ target.XDG, client });
 
+            const toplevel = surface.role_data.toplevel orelse @panic("toplevel null");
+
+            _ = toplevel.setWmCapabilities(.{ .fullscreen = true });
+
             surface.surface.events.commit.add(&client.events.commit_event);
             surface.surface.events.map.add(&client.events.map_event);
             surface.surface.events.unmap.add(&client.events.unmap_event);
             surface.surface.events.destroy.add(&client.events.deinit_event);
 
-            const toplevel = surface.role_data.toplevel orelse @panic("toplevel null");
             toplevel.events.set_title.add(&client.events.set_title_event);
             toplevel.events.request_fullscreen.add(&client.events.fullscreen_event);
 
@@ -544,13 +561,11 @@ pub fn dissociate(self: *Client) !void {
 }
 
 pub fn setHints(self: *Client) !void {
-    // TODO: implement
     // const surface = self.getSurface();
+    if (self == self.session.selmon.?.focusedClient())
+        return;
 
-    // if (surface == self.session.selmon.?.focusedClient())
-    //     return;
-
-    _ = self;
+    // self.setUrgent()
 }
 
 pub fn map(self: *Client) !void {
@@ -580,21 +595,21 @@ pub fn map(self: *Client) !void {
             xdg.getGeometry(&geom);
         },
         .X11 => |x11| {
-            if (self.managed) {
-                geom = .{
-                    .x = 0,
-                    .y = 0,
-                    .width = 0,
-                    .height = 0,
-                };
-            } else {
-                geom = .{
-                    .x = x11.x,
-                    .y = x11.y,
-                    .width = x11.width,
-                    .height = x11.height,
-                };
-            }
+            // if (self.managed) {
+            //     geom = .{
+            //         .x = 0,
+            //         .y = 0,
+            //         .width = 0,
+            //         .height = 0,
+            //     };
+            // } else {
+            geom = .{
+                .x = x11.x,
+                .y = x11.y,
+                .width = x11.width,
+                .height = x11.height,
+            };
+            // }
         },
     }
 
@@ -1001,7 +1016,6 @@ pub fn unmap(self: *Client) !void {
     if (!self.managed) {
         if (self.getSurface() == self.session.exclusive_focus)
             self.session.exclusive_focus = null;
-        // TODO: remove exclusive focus if needed
         if (self.getSurface() == self.session.input.seat.keyboard_state.focused_surface) unfocus: {
             if (self.session.selmon) |selmon| {
                 if (selmon.focusedClient()) |top| {

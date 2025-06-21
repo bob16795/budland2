@@ -3,6 +3,7 @@ const conpositor = @import("wayland").server.conpositor;
 const wlr = @import("wlroots");
 const std = @import("std");
 const xcb = @import("xcb");
+
 const c = @import("c.zig");
 
 const Config = @import("config.zig");
@@ -32,6 +33,7 @@ pub const Layer = enum {
 };
 
 const CycleDir = enum { forward, backward };
+const NetAtom = enum { window_type_dialog, window_type_splash, window_type_toolbar, window_type_utility };
 
 pub const SessionError = error{
     ServerCreateFailed,
@@ -68,7 +70,8 @@ session_lock_manager: *wlr.SessionLockManagerV1,
 
 xdg_decoration_manager: *wlr.XdgDecorationManagerV1,
 compositor: *wlr.Compositor,
-xwayland: *wlr.Xwayland,
+xwayland: ?*wlr.Xwayland,
+net_atoms: std.EnumArray(NetAtom, c.xcb_atom_t),
 
 input: Input = undefined,
 
@@ -93,7 +96,7 @@ output_manager_apply_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(List
 output_manager_test_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerTest),
 
 const FOCUS_ORDER = [_]Layer{
-    .LyrBlock, .LyrOverlay, .LyrTop, .LyrFS, .LyrFloat, .LyrTile, .LyrBottom, .LyrBg,
+    .LyrBlock, .LyrFS, .LyrOverlay, .LyrTop, .LyrFloat, .LyrTile, .LyrBottom, .LyrBg,
 };
 
 const Listeners = struct {
@@ -131,7 +134,10 @@ const Listeners = struct {
     pub fn xwayland_ready(listener: *wl.Listener(void)) void {
         const self: *Session = @fieldParentPtr("xwayland_ready_event", listener);
 
-        self.input.xwayland_ready(self.xwayland);
+        self.xwayland_ready(self.xwayland.?) catch |err| {
+            std.log.err("failed to init server xwayland {}", .{err});
+        };
+        self.input.xwayland_ready(self.xwayland.?);
     }
 
     pub fn new_toplevel_decoration(listener: *wl.Listener(*wlr.XdgToplevelDecorationV1), decoration: *wlr.XdgToplevelDecorationV1) void {
@@ -200,7 +206,8 @@ pub fn deinit(self: *Session) void {
 
     self.config.deinit();
 
-    self.xwayland.destroy();
+    self.xwayland.?.destroy();
+    self.xwayland = null;
 
     self.backend.destroy();
 
@@ -492,10 +499,13 @@ pub fn init() SessionError!Session {
         .xdg_decoration_manager = xdg_decoration_manager,
         .xdg_activation = xdg_activation,
         .xwayland = xwayland,
+        .net_atoms = .initUndefined(),
     };
 }
 
 pub fn attachEvents(self: *Session) SessionError!void {
+    signal_session = self;
+
     self.monitors.init();
     self.clients.init();
     self.focus_clients.init();
@@ -518,19 +528,29 @@ pub fn attachEvents(self: *Session) SessionError!void {
 
     self.xdg_decoration_manager.events.new_toplevel_decoration.add(&self.new_toplevel_decoration_event);
 
-    self.xwayland.events.new_surface.add(&self.new_xwayland_surface_event);
-    self.xwayland.events.ready.add(&self.xwayland_ready_event);
+    self.xwayland.?.events.new_surface.add(&self.new_xwayland_surface_event);
+    self.xwayland.?.events.ready.add(&self.xwayland_ready_event);
 
     self.output_manager.events.apply.add(&self.output_manager_apply_event);
     self.output_manager.events.@"test".add(&self.output_manager_test_event);
 }
 
 pub fn launch(self: *Session) SessionError!void {
+    const signals = [_]i32{ std.c.SIG.CHLD, std.c.SIG.INT, std.c.SIG.TERM, std.c.SIG.PIPE };
+
+    inline for (signals) |sig| {
+        _ = std.c.sigaction(sig, &.{
+            .flags = std.c.SA.RESTART,
+            .handler = .{ .handler = &handleSignal },
+            .mask = std.posix.sigemptyset(),
+        }, null);
+    }
+
     var buf: [11]u8 = undefined;
     const socket = try self.server.addSocketAuto(&buf);
 
     _ = c.setenv("WAYLAND_DISPLAY", socket, 1);
-    _ = c.setenv("DISPLAY", self.xwayland.display_name, 1);
+    _ = c.setenv("DISPLAY", self.xwayland.?.display_name, 1);
 
     try self.config.sourcePath("init.lua");
 
@@ -625,20 +645,18 @@ pub fn focusedClient(self: *Session) ?*Client {
     return selected.focusedClient();
 }
 
-const ViewAtResult = struct {
-    toplevel: *Client,
-    sx: f64,
-    sy: f64,
-};
-
-pub fn getClient(session: *Session, surface: *wlr.Surface) ?*Client {
+pub fn getSurfaceObjects(self: *Session, surface: *wlr.Surface) ObjectData {
     const root_surface = surface.getRootSurface();
 
     if (wlr.XwaylandSurface.tryFromWlrSurface(root_surface)) |x_surface|
-        return @ptrFromInt(x_surface.data);
+        return .{
+            .client = @ptrFromInt(x_surface.data),
+        };
 
     if (wlr.LayerSurfaceV1.tryFromWlrSurface(root_surface)) |layer_surface|
-        return @ptrFromInt(layer_surface.data);
+        return .{
+            .layer_surface = @ptrFromInt(layer_surface.data),
+        };
 
     var vxdg_surface = wlr.XdgSurface.tryFromWlrSurface(root_surface);
     while (vxdg_surface) |*xdg_surface| {
@@ -648,18 +666,26 @@ pub fn getClient(session: *Session, surface: *wlr.Surface) ?*Client {
                     if (wlr.XdgSurface.tryFromWlrSurface(parent)) |parent_surface|
                         vxdg_surface = parent_surface
                     else
-                        return session.getClient(parent);
-                } else return null;
+                        return self.getSurfaceObjects(parent);
+                } else return .{};
             },
             .toplevel => {
-                return @ptrFromInt(xdg_surface.*.data);
+                return .{
+                    .client = @ptrFromInt(xdg_surface.*.data),
+                };
             },
-            .none => return null,
+            .none => return .{},
         }
     }
 
-    return null;
+    return .{};
 }
+
+const ViewAtResult = struct {
+    toplevel: *Client,
+    sx: f64,
+    sy: f64,
+};
 
 pub fn viewAt(session: *Session, lx: f64, ly: f64) ?ViewAtResult {
     var sx: f64 = undefined;
@@ -716,7 +742,7 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
         if (old_focus.? == self.exclusive_focus)
             return;
 
-        const old_client: ?*Client = self.getClient(old_focus.?);
+        const old_client: ?*Client = self.getSurfaceObjects(old_focus.?).client;
         if (old_client) |old|
             old.activateSurface(false);
     }
@@ -741,7 +767,7 @@ pub fn focusClear(self: *Session) void {
     const old_focus = input.seat.keyboard_state.focused_surface;
 
     if (old_focus) |old| {
-        const old_client: ?*Client = self.getClient(old);
+        const old_client: ?*Client = self.getSurfaceObjects(old).client;
         if (old_client) |old_focus_client|
             old_focus_client.activateSurface(false);
     }
@@ -777,15 +803,13 @@ pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
         var pnode = node;
         while (pnode != null and result.client == null) : (pnode = &pnode.?.parent.?.node) {
             result.client = @as(?*Client, @ptrFromInt(pnode.?.data));
+        }
+
+        if (result.client != null and result.client.?.client_id != 10) {
+            result.client = null;
             result.layer_surface = @as(?*LayerSurface, @ptrFromInt(pnode.?.data));
-
-            if (result.client != null and result.client.?.client_id != 10)
-                result.client = null;
-
             if (result.layer_surface != null and result.layer_surface.?.surface_id != 25)
                 result.layer_surface = null;
-
-            if (pnode.?.parent == null) break;
         }
     }
 
@@ -845,4 +869,46 @@ pub fn reloadColors(self: *Session) !void {
 pub fn addIpc(self: *Session, resource: *conpositor.IpcSessionV1) void {
     _ = self;
     _ = resource;
+}
+
+var signal_session: ?*Session = null;
+
+pub fn handleSignal(signo: i32) callconv(.c) void {
+    const session = signal_session orelse return;
+
+    if (signo == std.c.SIG.CHLD) {
+        var info: std.os.linux.siginfo_t = undefined;
+        var tmp: u32 = 0;
+
+        while (std.os.linux.waitid(.ALL, 0, &info, std.c.W.EXITED | std.c.W.NOHANG | std.c.W.NOWAIT) == 0 and
+            info.fields.common.first.piduid.pid != 0 and
+            (session.xwayland == null or info.fields.common.first.piduid.pid != session.xwayland.?.server.?.pid))
+            _ = std.os.linux.waitpid(info.fields.common.first.piduid.pid, &tmp, 0);
+    } else if (signo == std.c.SIG.INT or signo == std.c.SIG.TERM) {
+        session.server.terminate();
+    }
+}
+
+fn getAtom(xc: *c.xcb_connection_t, name: [:0]const u8) c.xcb_atom_t {
+    var atom: c.xcb_atom_t = 0;
+    const cookie = c.xcb_intern_atom(xc, 0, @intCast(name.len), name);
+    const reply = c.xcb_intern_atom_reply(xc, cookie, null);
+    if (reply != 0)
+        atom = reply.*.atom;
+    c.free(reply);
+
+    return atom;
+}
+
+fn xwayland_ready(self: *Session, xwayland: *wlr.Xwayland) !void {
+    const xc = c.xcb_connect(xwayland.display_name, null) orelse return;
+    defer c.xcb_disconnect(xc);
+    if (c.xcb_connection_has_error(xc) != 0) {
+        std.log.info("xcb_connect_failed", .{});
+    }
+
+    self.net_atoms.set(.window_type_dialog, getAtom(xc, "_NET_WM_WINDOW_TYPE_DIALOG"));
+    self.net_atoms.set(.window_type_splash, getAtom(xc, "_NET_WM_WINDOW_TYPE_SPLASH"));
+    self.net_atoms.set(.window_type_toolbar, getAtom(xc, "_NET_WM_WINDOW_TYPE_TOOLBAR"));
+    self.net_atoms.set(.window_type_utility, getAtom(xc, "_NET_WM_WINDOW_TYPE_UTILITY"));
 }
