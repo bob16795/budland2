@@ -68,10 +68,13 @@ const Listeners = struct {
 };
 
 pub fn create(session: *Session, surf: *wlr.LayerSurfaceV1) !void {
-    const monitor: *Monitor = @as(?*Monitor, @ptrFromInt(surf.output.?.data)) orelse session.focusedMonitor orelse {
-        surf.destroy();
-        return;
-    };
+    const monitor: *Monitor = if (surf.output) |output|
+        @as(*Monitor, @ptrFromInt(output.data))
+    else
+        session.focusedMonitor orelse {
+            surf.destroy();
+            return;
+        };
 
     const parent_scene = session.layers.get(@enumFromInt(@intFromEnum(surf.pending.layer)));
     const popups = try parent_scene.createSceneTree();
