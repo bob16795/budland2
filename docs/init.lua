@@ -1,153 +1,160 @@
-function pt(pixels)
-    return pixels * 1.3333
-end
+-- want gaps plz
+gaps = require("conpositor.gaps")
+funcs = require("conpositor.funcs")
+mouse = require("conpositor.mouse")
 
-session:set_font("CaskaydiaCovePL Nerd Font", pt(12))
+-- add this first in case of crash
+session:add_bind("AS", "Escape", funcs.quit())
 
-a_container = Container.new(0.0, 0.0, 1.0, 0.2)
-b_container = Container.new(0.0, 0.0, 1.0, 0.4)
-c_container = Container.new(0.0, 0.2, 1.0, 1.0)
-d_container = Container.new(0.0, 0.4, 1.0, 1.0)
+-- some usefull consts
+local force_debug = false
+local terminal = "kitty"
 
-floating_container = Container.new(0.2, 0.2, 0.8, 0.8)
+-- load colorscheme and libraries
+package.loaded["colors"] = nil
+require("colors")
 
-root_containers = {a_container, b_container, c_container, d_container, floating_container}
-for idx, container in pairs(root_containers) do
-    container:set_stack(idx)
-end
+gaps.setup {inc = 2, toggle = true, value = 8, ratio = 2, outer = 30}
+mouse.setup {}
 
-ac_container = Container.new(0.0, 0.0, 0.7, 1.0)
-ac_container:add_child(a_container)
-ac_container:add_child(c_container)
+-- fonts
+funcs.set_font_pt("CaskaydiaCovePL Nerd Font", 14)
 
-bd_container = Container.new(0.7, 0.0, 1.0, 1.0)
-bd_container:add_child(b_container)
-bd_container:add_child(d_container)
-
-abcd_container = Container.new(0, 0, 1, 1)
-abcd_container:add_child(ac_container)
-abcd_container:add_child(bd_container)
-
-abcdf_container = Container.new(0, 0, 1, 1)
-abcdf_container:add_child(abcd_container)
-abcdf_container:add_child(floating_container)
-
-session:add_layout(Layout.new("]+>+[", abcd_container))
-session:add_layout(Layout.new("]+++[", abcdf_container))
-
+stacks = {a = 1, b = 2, c = 3, d = 4, e = 5}
 tags = {session:new_tag("F1"), session:new_tag("F2"), session:new_tag("F3"), session:new_tag("F4")}
 
+abcd_container = session:add_layout("]+>+[")
+abcd_left_container = session:add_layout("]+++[")
+
+function setup_abcd(root_container, split)
+    local split = split
+
+    bd_container = root_container:add_child(split, 0.0, 1.0, 1.0)
+    ac_container = root_container:add_child(0.0, 0.0, split, 1.0)
+
+    b_container = bd_container:add_child(0.0, 0.0, 1.0, 0.4)
+    d_container = bd_container:add_child(0.0, 0.4, 1.0, 1.0)
+
+    a_container = ac_container:add_child(0.0, 0.0, 1.0, 0.2)
+    c_container = ac_container:add_child(0.0, 0.2, 1.0, 1.0)
+
+    a_container:set_stack(stacks.a)
+    b_container:set_stack(stacks.b)
+    c_container:set_stack(stacks.c)
+    d_container:set_stack(stacks.d)
+end
+
+setup_abcd(abcd_container, 0.7)
+setup_abcd(abcd_left_container, 0.3)
+
+-- mouse functions
+local mouse_client = nil
+local mouse_client_position = {}
+local mouse_floating = false
+mouse_resize = {}
+mouse_resize.start = function(client, position)
+    mouse_client = client
+    mouse_client_position = client:get_position()
+end
+mouse_resize.move = function(position)
+    mouse_client_position.width = position.x - mouse_client_position.x
+    mouse_client_position.height = position.y - mouse_client_position.y
+
+    mouse_client:set_position(mouse_client_position)
+end
+
+mouse_move = {}
+mouse_move.start = function(client, position)
+    mouse_client = client
+    mouse_floating = client:get_floating()
+    if mouse_floating then
+        mouse_client_position = client:get_position()
+        mouse_client_position.x = mouse_client_position.x - position.x
+        mouse_client_position.y = mouse_client_position.y - position.y
+    end
+end
+mouse_move.move = function(position)
+    if mouse_floating then
+        local pos = {}
+        pos.x = mouse_client_position.x + position.x
+        pos.y = mouse_client_position.y + position.y
+        pos.width = mouse_client_position.width
+        pos.height = mouse_client_position.height
+
+        mouse_client:set_position(pos)
+    else
+        local size = session:active_monitor():get_size()
+        if position.y - size.y < 0.5 * size.height then
+            if position.x - size.x < 0.5 * size.width then
+                mouse_client:set_stack(stacks.a)
+            else
+                mouse_client:set_stack(stacks.b)
+            end
+        else
+            if position.x - size.x < 0.5 * size.width then
+                mouse_client:set_stack(stacks.c)
+            else
+                mouse_client:set_stack(stacks.d)
+            end
+        end
+    end
+end
+
 local super = "L"
-if session.is_debug() then
+if force_debug or session.is_debug() then
     super = "A"
 end
 
-function set_border(size)
-    local client = session:active_client()
-    if client then
-        client:set_border(size)
-    end
-end
+-- mousebinds
+mouse.addBind("resize", mouse_resize)
+mouse.addBind("move", mouse_move)
 
-function set_active_tag(tag)
-    local monitor = session:active_monitor()
-    if monitor then
-        monitor:set_tag(tag)
-    end
-end
+session:add_mouse(super, "Left", mouse.bind("move"))
+session:add_mouse(super, "Right", mouse.bind("resize"))
 
-function set_client_tag(tag)
-    local client = session:active_client()
-    if client then
-        client:set_tag(tag)
-    end
-end
+-- programs
+session:add_bind(super, "Return", funcs.spawn(terminal, {"--class=termA"}))
+session:add_bind(super .. "S", "Return", funcs.spawn(terminal, {"--class=termB"}))
+session:add_bind(super .. "C", "Return", funcs.spawn(terminal, {"--class=termB"}))
+session:add_bind(super, "I", funcs.spawn(terminal, {"--class=htop", "-e", "htop"}))
+session:add_bind(super, "M", funcs.spawn(terminal, {"--class=music", "-e", "kew"}))
+session:add_bind(super, "R", funcs.spawn(terminal, {"--class=filesD", "-e", "ranger"}))
+session:add_bind(super .. "S", "R", funcs.spawn(terminal, {"--class=filesB", "-e", "ranger"}))
+session:add_bind(super, "V", funcs.spawn(terminal, {"--class=cava", "-e", "cava"}))
 
-for idx, tag in pairs(tags) do
-    session:add_bind(super, "F" .. idx, function()
-        set_active_tag(tag)
-    end)
-    session:add_bind(super .. "S", "F" .. idx, function()
-        set_client_tag(tag)
-    end)
-end
-
-for idx, container in pairs(root_containers) do
-    session:add_bind(super .. "S", "" .. idx, function()
-        local client = session:active_client()
-        if client then
-            client:set_container(container)
-        end
-    end)
-end
-
-local bind_spawn = function(mods, key, program, args)
-    session:add_bind(mods, key, function()
-        Session.spawn(program, args)
-    end)
-end
-
-bind_spawn(super, "Return", "alacritty", {"--class=termA"})
-bind_spawn(super .. "S", "Return", "alacritty", {"--class=termB"})
-bind_spawn(super .. "C", "Return", "alacritty", {"--class=termB"})
-bind_spawn(super, "I", "alacritty", {"--class=htop", "-ehtop"})
-bind_spawn(super, "M", "alacritty", {"--class=music", "-encmpcpp"})
-bind_spawn(super, "R", "alacritty", {"--class=filesD", "-eranger"})
-bind_spawn(super .. "S", "R", "alacritty", {"--class=filesB", "-eranger"})
-bind_spawn(super .. "S", "S", "swww-daemon", {})
-bind_spawn(super, "W", "chromium", {})
-bind_spawn(super, "A", "pavucontrol", {})
-bind_spawn(super, "C", "neovide", {})
+session:add_bind(super .. "S", "S", funcs.spawn("ss.sh", {}))
+session:add_bind(super, "W", funcs.spawn("chromium", {}))
+session:add_bind(super, "A", funcs.spawn("pavucontrol", {}))
 
 -- launchers
-bind_spawn(super, "D", "bemenu-launcher", {})
-bind_spawn(super .. "S", "D", "j4-dmenu-desktop", {"--dmenu=menu"})
-bind_spawn(super .. "S", "W", "bwpcontrol", {"menu"})
-bind_spawn(super, "T", "mondocontrol", {"menu"})
+session:add_bind(super, "D", funcs.spawn("bemenu-launcher", {}))
+session:add_bind(super .. "S", "D", funcs.spawn("j4-dmenu-desktop", {"--dmenu=menu"}))
+session:add_bind(super .. "S", "W", funcs.spawn("bwpcontrol", {"menu"}))
+session:add_bind(super, "T", funcs.spawn("mondocontrol", {"menu"}))
 
-session:add_bind(super, "H", function()
-    local monitor = session:active_monitor()
-    if monitor then
-        local layout = monitor:get_layout()
-        monitor:set_layout(layout + 1)
-    end
-end)
+-- misc session mgmt
+session:add_bind(super, "H", funcs.cycle_layout(1))
+session:add_bind(super .. "S", "H", funcs.cycle_layout(-1))
+session:add_bind(super, "Tab", funcs.cycle_focus(1))
+session:add_bind(super .. "S", "Tab", funcs.cycle_focus(-1))
+session:add_bind(super, "Space", funcs.toggle_floating())
+session:add_bind(super .. "S", "Escape", funcs.quit())
+session:add_bind(super, "Q", funcs.kill_client())
 
-session:add_bind(super .. "S", "H", function()
-    local monitor = session:active_monitor()
-    if monitor then
-        local layout = monitor:get_layout()
-        monitor:set_layout(layout - 1)
-    end
-end)
+-- tags
+for idx, tag in pairs(tags) do
+    session:add_bind(super, "F" .. idx, funcs.set_monitor_tag(tag))
+    session:add_bind(super .. "S", "F" .. idx, funcs.set_client_tag(tag))
+end
 
-session:add_bind(super .. "S", "Escape", function()
-    session:quit(1)
-end)
-
-session:add_bind(super, "Tab", function()
-    session:cycle_focus(1)
-end)
-
-session:add_bind(super .. "S", "Tab", function()
-    session:cycle_focus(-1)
-end)
-
-session:add_bind(super, "Space", function()
-    local client = session:active_client()
-    if client then
-        client:set_floating(not client:get_floating())
-    end
-end)
-
-session:add_bind(super, "Q", function()
-    local client = session:active_client()
-    if client then
-        client:close()
-    end
-end)
+-- stacks
+for name, stack in pairs(stacks) do
+    session:add_bind(super .. "S", "" .. stack, funcs.set_client_stack(stack))
+end
 
 local client_rule = function(filter, rule)
+    local filter = filter
+    local rule = rule
     session:add_rule(filter, function(client)
         if rule.container ~= nil then
             client:set_container(rule.container)
@@ -163,14 +170,24 @@ local client_rule = function(filter, rule)
     end)
 end
 
-client_rule({}, {icon = "", border = 2})
+session:add_rule({}, function(client)
+    client:set_container(c_container)
+    client:set_floating(true)
+    client:set_icon("?")
+    client:set_border(3)
+end)
+
+session:add_bind(super, "P", funcs.reload())
+session:add_bind(super, "G", gaps.increase)
+session:add_bind(super .. "S", "G", gaps.decrease)
+session:add_bind(super .. "S", "V", gaps.toggle)
 
 client_rule({appid = "termA"}, {container = a_container, icon = ""})
 client_rule({appid = "termB"}, {container = b_container, icon = ""})
 client_rule({appid = "termF"}, {icon = ""})
 client_rule({appid = "filesB"}, {container = b_container, icon = ""})
 client_rule({appid = "filesD"}, {container = d_container, icon = ""})
-client_rule({appid = "music"}, {container = c_container, icon = ""})
+client_rule({appid = "music"}, {container = d_container, icon = ""})
 client_rule({appid = "discord"}, {container = c_container, icon = "Chat"})
 client_rule({appid = "htop"}, {container = c_container, icon = ""})
 client_rule({appid = "Sxiv"}, {container = b_container, icon = ""})
@@ -180,20 +197,18 @@ client_rule({appid = "pavucontrol"}, {container = b_container, icon = ""})
 client_rule({appid = "neovide"}, {container = c_container, icon = ""})
 client_rule({appid = "PrestoEdit"}, {container = c_container, icon = ""})
 client_rule({appid = "Code - Insiders"}, {container = c_container, icon = ""})
-client_rule({appid = "cava"}, {container = d_container, icon = ""})
+client_rule({appid = "cava"}, {container = b_container, icon = ""})
 
-session:add_hook("startup", function()
-    Session.spawn("wlr-randr",
+session:add_hook("startup", function(startup)
+    session:spawn("wlr-randr",
         {"--output", "eDP-1", "--pos", "2560,0", "--output", "DP-4", "--mode", "2560x1080", "--pos", "0,0"})
-
-    Session.spawn("swww-daemon", {})
-    Session.spawn("dunst", {})
-    Session.spawn("waybar", {})
-    Session.spawn("blueman-applet", {})
-    Session.spawn("nm-applet", {})
+    session:spawn("swww-daemon", {})
+    session:spawn("dunst", {})
+    session:spawn("waybar", {})
+    session:spawn("blueman-applet", {})
+    session:spawn("nm-applet", {})
 end)
 
-session:add_bind(super, "F", function()
-    Session.spawn("wlr-randr",
-        {"--output", "eDP-1", "--pos", "2560,0", "--output", "DP-4", "--mode", "2560x1080", "--pos", "0,0"})
-end)
+function reload()
+    funcs.reload()()
+end
