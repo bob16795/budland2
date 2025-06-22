@@ -421,7 +421,7 @@ const LuaClient = struct {
     }
 
     pub fn lua_get_label(self: *LuaClient) ?[:0]const u8 {
-        return self.child.getLabel();
+        return self.child.label;
     }
 
     pub fn lua_get_appid(self: *LuaClient) ?[:0]const u8 {
