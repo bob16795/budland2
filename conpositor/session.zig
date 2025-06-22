@@ -95,8 +95,26 @@ new_toplevel_decoration_event: wl.Listener(*wlr.XdgToplevelDecorationV1) = .init
 output_manager_apply_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerApply),
 output_manager_test_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerTest),
 
-const FOCUS_ORDER = [_]Layer{
-    .LyrBlock, .LyrFS, .LyrOverlay, .LyrTop, .LyrFloat, .LyrTile, .LyrBottom, .LyrBg,
+const STACKING_ORDER = [_]Layer{
+    .LyrBg,
+    .LyrBottom,
+
+    .LyrTileShadows,
+    .LyrTile,
+    .LyrFloatShadows,
+    .LyrFloat,
+    .LyrFS,
+    .LyrDragIcon,
+    .LyrBlock,
+
+    .LyrTop,
+    .LyrOverlay,
+};
+
+const FOCUS_ORDER = blk: {
+    var tmp = STACKING_ORDER;
+    std.mem.reverse(Layer, &tmp);
+    break :blk tmp;
 };
 
 const Listeners = struct {
@@ -258,9 +276,9 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 
         ok = ok and
             if (is_test)
-                wlr_output.testState(&state)
-            else
-                wlr_output.commitState(&state);
+            wlr_output.testState(&state)
+        else
+            wlr_output.commitState(&state);
 
         std.log.info("move monitor {*}, {} {}", .{ monitor, monitor.mode, monitor.window });
     }
@@ -793,11 +811,11 @@ pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
         var pnode = node;
         while (pnode != null and result.client == null) : (pnode = &pnode.?.parent.?.node) {
             result.client = @as(?*Client, @ptrFromInt(pnode.?.data));
-        }
-
-        if (result.client != null and result.client.?.client_id != 10) {
-            result.client = null;
             result.layer_surface = @as(?*LayerSurface, @ptrFromInt(pnode.?.data));
+
+            if (result.client != null and result.client.?.client_id != 10)
+                result.client = null;
+
             if (result.layer_surface != null and result.layer_surface.?.surface_id != 25)
                 result.layer_surface = null;
         }
@@ -854,9 +872,12 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
 }
 
 pub fn reloadColors(self: *Session) !void {
-    var iter = self.monitors.iterator(.forward);
-    while (iter.next()) |monitor|
-        try monitor.arrangeLayers();
+    // var iter = self.monitors.iterator(.forward);
+    // while (iter.next()) |monitor|
+    //     try monitor.arrangeLayers();
+    var iter = self.clients.iterator(.forward);
+    while (iter.next()) |client|
+        try client.updateFrame();
 }
 
 pub fn addIpc(self: *Session, resource: *conpositor.IpcSessionV1) void {

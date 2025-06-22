@@ -11,15 +11,13 @@ local force_debug = false
 local terminal = "kitty"
 
 -- load colorscheme and libraries
-package.loaded["colors"] = nil
-require("colors")
+require("mondo.colors")
 
+-- setup libraries
 gaps.setup { inc = 2, toggle = true, value = 8, ratio = 2, outer = 30 }
 mouse.setup {}
 
--- fonts
-funcs.set_font_pt("CaskaydiaCovePL Nerd Font", 14)
-
+-- create my containers
 stacks = { a = 1, b = 2, c = 3, d = 4, e = 5 }
 tags = { session:new_tag("F1"), session:new_tag("F2"), session:new_tag("F3"), session:new_tag("F4") }
 
@@ -65,6 +63,14 @@ local b_cycle = {
     { center_layout,  center_layout_b },  -- center
     { default_layout, default_layout_b }, -- default
 }
+
+-- functions for debugging
+function debug_icon()
+    local client = session:active_client()
+    if client then
+        client:set_icon("title: '" .. client:get_title() .. "' appid: '" .. client:get_appid() .. "'")
+    end
+end
 
 -- mouse functions
 local mouse_client = nil
@@ -209,7 +215,7 @@ client_rule({ appid = "termA" }, { stack = stacks.a, icon = "" })
 client_rule({ appid = "termB" }, { stack = stacks.b, icon = "" })
 client_rule({ appid = "termF" }, { icon = "" })
 client_rule({ appid = "filesB" }, { stack = stacks.b, icon = "" })
-client_rule({ appid = "filesD" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "filesD" }, { stack = stacks.d, icon = "" })
 client_rule({ appid = "music" }, { stack = stacks.d, icon = "" })
 client_rule({ appid = "discord" }, { stack = stacks.c, icon = "Chat" })
 client_rule({ appid = "htop" }, { stack = stacks.c, icon = "" })
@@ -219,7 +225,7 @@ client_rule({ appid = "Chromium" }, { stack = stacks.c, icon = "" })
 client_rule({ appid = "pavucontrol" }, { stack = stacks.b, icon = "" })
 client_rule({ appid = "neovide" }, { stack = stacks.c, icon = "" })
 client_rule({ appid = "PrestoEdit" }, { stack = stacks.c, icon = "" })
-client_rule({ appid = "Code - Insiders" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "code-insiders" }, { stack = stacks.c, icon = "" })
 client_rule({ appid = "cava" }, { stack = stacks.b, icon = "" })
 
 session:add_hook("startup", function(startup)
@@ -230,12 +236,14 @@ session:add_hook("startup", function(startup)
     session:spawn("waybar", {})
     session:spawn("blueman-applet", {})
     session:spawn("nm-applet", {})
+    session:spawn("/usr/lib/gsd-xsettings", {})
 end)
 
 session:add_hook("add_monitor", function(monitor)
     monitor:set_layout(default_layout)
 end)
 
-function reload()
-    funcs.reload()()
+function reload_colors()
+    package.loaded["mondo.colors"] = nil
+    require("mondo.colors")
 end

@@ -648,37 +648,21 @@ pub fn applyRules(self: *Client) !void {
     try self.session.config.applyRules(self);
 }
 
-pub fn getAppId(self: *Client) []const u8 {
+pub fn getAppId(self: *Client) [:0]const u8 {
     switch (self.surface) {
-        .XDG => |surface| {
-            const class = surface.role_data.toplevel.?.app_id orelse return "No appid";
-
-            return std.mem.span(class);
-        },
-        .X11 => |surface| {
-            const class = surface.class orelse return "No appid";
-
-            return std.mem.span(class);
-        },
+        .XDG => |surface| return std.mem.span(surface.role_data.toplevel.?.app_id) orelse "No appid",
+        .X11 => |surface| return std.mem.span(surface.class) orelse return "No appid",
     }
 }
 
-pub fn getTitle(self: *Client) []const u8 {
+pub fn getTitle(self: *Client) [:0]const u8 {
     switch (self.surface) {
-        .XDG => |surface| {
-            const title = surface.role_data.toplevel.?.title orelse return "No title";
-
-            return std.mem.span(title);
-        },
-        .X11 => |surface| {
-            const title = surface.title orelse return "No title";
-
-            return std.mem.span(title);
-        },
+        .XDG => |surface| return std.mem.span(surface.role_data.toplevel.?.title) orelse "No title",
+        .X11 => |surface| return std.mem.span(surface.title) orelse "No title",
     }
 }
 
-pub fn getLabel(self: *Client) []const u8 {
+pub fn getLabel(self: *Client) [:0]const u8 {
     if (self.label) |label|
         return label;
 

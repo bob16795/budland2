@@ -420,6 +420,18 @@ const LuaClient = struct {
         try self.child.setLabel(label);
     }
 
+    pub fn lua_get_label(self: *LuaClient) ?[:0]const u8 {
+        return self.child.getLabel();
+    }
+
+    pub fn lua_get_appid(self: *LuaClient) ?[:0]const u8 {
+        return self.child.getAppId();
+    }
+
+    pub fn lua_get_title(self: *LuaClient) ?[:0]const u8 {
+        return self.child.getTitle();
+    }
+
     pub fn lua_set_tag(self: *LuaClient, tag: *LuaTag) !void {
         try self.child.setTag(tag.id);
     }

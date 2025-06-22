@@ -123,10 +123,15 @@ pub fn commit(self: *LayerSurface) !void {
         self.monitor = @ptrFromInt(output.data);
     } else return;
 
+    if (self.monitor == null)
+        return;
+
     const lyr = self.session.layers.get(@enumFromInt(@intFromEnum(self.surface.current.layer)));
     if (lyr != self.scene_tree.node.parent) {
         self.scene_tree.node.reparent(lyr);
         self.popups.node.reparent(lyr);
+        self.link.remove();
+        self.monitor.?.layers[@intCast(@intFromEnum(self.surface.current.layer))].append(self);
     }
 
     if (@intFromEnum(self.surface.current.layer) < 2)
@@ -134,7 +139,6 @@ pub fn commit(self: *LayerSurface) !void {
 
     if (@as(u32, @bitCast(self.surface.current.committed)) == 0 and self.mapped == self.surface.surface.mapped)
         return;
-
     self.mapped = self.surface.surface.mapped;
 
     if (self.monitor) |m|
