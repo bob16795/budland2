@@ -9,6 +9,7 @@ const LayerSurface = @import("layersurface.zig");
 const Config = @import("config.zig");
 const Session = @import("session.zig");
 const Client = @import("client.zig");
+const Layout = @import("layout.zig");
 
 const Monitor = @This();
 
@@ -25,7 +26,7 @@ window: wlr.Box,
 mode: wlr.Box,
 layers: [TOTAL_LAYERS]wl.list.Head(LayerSurface, .link) = undefined,
 tag: u8 = 0,
-layout: u8 = 0,
+layout: ?*Layout = null,
 link: wl.list.Link = undefined,
 ipc_status: wl.list.Head(conpositor.IpcOutputV1, null) = undefined,
 gaps_inner: i32 = 0,
@@ -208,8 +209,8 @@ pub fn arrangeLayers(self: *Monitor) !void {
 }
 
 pub fn clientVisible(self: *Monitor, client: *Client) bool {
-    return (client.floating or
-        self.session.config.getLayouts()[self.layout].container.has(client.container)) and
+    return client.floating or
+        (if (self.layout) |layout| layout.container.has(client.container) else true) and
         client.monitor == self and self.tag == client.tag;
 }
 
@@ -217,15 +218,12 @@ pub fn focusedClient(self: *Monitor) ?*Client {
     var iter = self.session.focus_clients.iterator(.forward);
 
     return focused: while (iter.next()) |client| {
-        if (client.monitor == self and self.clientVisible(client))
+        if (self.clientVisible(client))
             break :focused client;
     } else null;
 }
 
 pub fn arrangeClients(self: *Monitor) !void {
-    // const containers = self.session.config.getContainers();
-    const layouts = self.session.config.getLayouts();
-
     // TODO: dynamic/packed allocation?
     var usage: [256]bool = .{false} ** 256;
 
@@ -247,7 +245,7 @@ pub fn arrangeClients(self: *Monitor) !void {
         }
     }
 
-    var iter = self.session.clients.iterator(.forward);
+    var iter = self.session.focus_clients.iterator(.forward);
     while (iter.next()) |client| {
         if (client.monitor == self) {
             const visible = self.clientVisible(client);
@@ -255,13 +253,21 @@ pub fn arrangeClients(self: *Monitor) !void {
             if (!client.floating and visible) {
                 const border = if (client.frame.kind == .hide) 0 else client.border;
 
-                const new = layouts[self.layout].getSize(
-                    client.container,
-                    self.window,
-                    &usage,
-                    self.gaps_inner,
-                    self.gaps_outer,
-                );
+                const new = if (self.layout) |layout|
+                    layout.getSize(
+                        client.container,
+                        self.window,
+                        &usage,
+                        self.gaps_inner,
+                        self.gaps_outer,
+                    )
+                else
+                    wlr.Box{
+                        .x = self.window.x + self.gaps_outer + self.gaps_inner,
+                        .y = self.window.y + self.gaps_outer + self.gaps_inner,
+                        .width = self.window.width - 2 * (self.gaps_outer + self.gaps_inner),
+                        .height = self.window.height - 2 * (self.gaps_outer + self.gaps_inner),
+                    };
 
                 if (border != 0) {
                     try client.setFrame(if (new.y == self.window.y)
@@ -275,7 +281,7 @@ pub fn arrangeClients(self: *Monitor) !void {
         }
     }
 
-    iter = self.session.clients.iterator(.forward);
+    iter = self.session.focus_clients.iterator(.forward);
     while (iter.next()) |client|
         try client.updateFrame();
 
@@ -344,7 +350,6 @@ pub fn deinit(self: *Monitor) void {
 
 pub fn addIpc(self: *Monitor, resource: *conpositor.IpcOutputV1) void {
     const tags = self.session.config.getTags();
-    const layouts = self.session.config.getLayouts();
 
     // TODO: send containers
     // const containers = self.session.config.getContainers();
@@ -361,8 +366,8 @@ pub fn addIpc(self: *Monitor, resource: *conpositor.IpcOutputV1) void {
         );
     }
     resource.sendLayout(
-        @intCast(self.layout),
-        layouts[self.layout].name,
+        0,
+        if (self.layout) |layout| layout.name else "",
     );
 
     if (self.focusedClient()) |focus| {
@@ -413,26 +418,21 @@ pub fn setGaps(self: *Monitor, pos: enum { inner, outer }, gaps: i32) !void {
     try self.arrangeClients();
 }
 
-pub fn setLayout(self: *Monitor, layout: i32) !void {
+pub fn setLayout(self: *Monitor, layout: ?*Layout) !void {
     if (self.layout == layout)
         return;
 
     if (self.session.config.layouts.items.len == 0)
         return;
 
-    var new_layout: i32 = layout;
-    while (new_layout < 0)
-        new_layout += @intCast(self.session.config.layouts.items.len);
-    new_layout = @mod(new_layout, @as(i32, @intCast(self.session.config.layouts.items.len)));
-    self.layout = @intCast(new_layout);
-
+    self.layout = layout;
     try self.arrangeClients();
 
     var iter = self.ipc_status.iterator(.forward);
     while (iter.next()) |resource| {
         resource.sendLayout(
-            @intCast(self.layout),
-            self.session.config.layouts.items[self.layout].name,
+            0,
+            if (self.layout) |l| l.name else "",
         );
         resource.sendFrame();
     }

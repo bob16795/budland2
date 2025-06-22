@@ -99,6 +99,7 @@ pub fn build(b: *std.Build) void {
     conpositor.linkSystemLibrary("lua");
     conpositor.linkSystemLibrary("wayland-server");
     conpositor.linkSystemLibrary("xcb");
+    conpositor.linkSystemLibrary("libinput");
     conpositor.linkSystemLibrary("xkbcommon");
     conpositor.linkSystemLibrary("pixman-1");
 

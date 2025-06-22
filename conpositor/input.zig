@@ -3,6 +3,7 @@ const wlr = @import("wlroots");
 const std = @import("std");
 const xkb = @import("xkbcommon");
 const cairo = @import("cairo");
+const c = @import("c.zig");
 
 const Session = @import("session.zig");
 const Client = @import("client.zig");
@@ -277,11 +278,11 @@ pub fn init(self: *Input, session: *Session) !void {
     cursor.events.axis.add(&self.events.cursor_axis_event);
     cursor.events.frame.add(&self.events.cursor_frame_event);
 
-    const xcursor_manager = try wlr.XcursorManager.create(null, 24);
-    session.backend.events.new_input.add(&self.events.new_input_event);
-
     const cursor_shape_manager = try wlr.CursorShapeManagerV1.create(session.server, 1);
     cursor_shape_manager.events.request_set_shape.add(&self.events.set_cursor_shape_event);
+
+    const xcursor_manager = try wlr.XcursorManager.create(null, 24);
+    session.backend.events.new_input.add(&self.events.new_input_event);
 
     const seat = try wlr.Seat.create(session.server, "seat0");
     seat.events.request_set_cursor.add(&self.events.request_set_cursor_event);
@@ -343,10 +344,6 @@ pub fn motionNotify(
     }
 
     if (time > 0) {
-        //self.relative_pointer_manager.sendRelativeMotion(self.seat, time * 1000, dx, dy, dx_unaccel, dy_unaccel);
-
-        // TODO: constraints
-
         self.session.idle_notifier.notifyActivity(self.seat);
 
         if (objects.monitor) |monitor|
@@ -372,7 +369,7 @@ pub fn motionNotify(
         .y = self.cursor.y,
     };
 
-    if (try self.session.config.sendEvent(Config.LuaVec, .mouse_move, data))
+    if (self.cursor_mode == .lua and try self.session.config.sendEvent(Config.LuaVec, .mouse_move, data))
         return;
 
     if (objects.surface == null and
@@ -383,17 +380,22 @@ pub fn motionNotify(
         self.cursor.setXcursor(self.xcursor_manager, self.xcursor_image.?);
     }
 
-    if (objects.client) |focusing|
-        try self.pointerFocus(focusing, focusing.getSurface(), objects.surface_x, objects.surface_y, time);
+    try self.pointerFocus(objects.client, objects.surface, objects.surface_x, objects.surface_y, time);
 }
 
-pub fn pointerFocus(self: *Input, target_client: *Client, surface: *wlr.Surface, x: f64, y: f64, time: usize) !void {
+pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surface, x: f64, y: f64, time: usize) !void {
     const internal_call = time == 0;
     var atime: usize = time;
 
     if (!internal_call and
-        !(target_client.surface == .X11 and !target_client.managed))
-        try self.session.focusClient(target_client, false);
+        target_client != null and
+        !(target_client.?.surface == .X11 and !target_client.?.managed))
+        try self.session.focusClient(target_client.?, false);
+
+    if (surface == null) {
+        self.seat.pointerNotifyClearFocus();
+        return;
+    }
 
     if (internal_call) {
         const now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
@@ -402,7 +404,7 @@ pub fn pointerFocus(self: *Input, target_client: *Client, surface: *wlr.Surface,
         atime = @bitCast(now.sec * 1000 + @divTrunc(now.nsec, 1000000));
     }
 
-    self.seat.pointerNotifyEnter(surface, x, y);
+    self.seat.pointerNotifyEnter(surface.?, x, y);
     self.seat.pointerNotifyMotion(@intCast(atime), x, y);
 }
 
@@ -459,7 +461,6 @@ pub fn endDrag(self: *Input) !bool {
 
 pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
     self.session.idle_notifier.notifyActivity(self.seat);
-
     self.seat.pointerNotifyAxis(axis.time_msec, axis.orientation, axis.delta, axis.delta_discrete, axis.source, axis.relative_direction);
 }
 
@@ -533,7 +534,41 @@ pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
             self.keyboards.append(keyboard);
         },
         .pointer => {
-            // std.log.warn("TODO: libinput", .{});
+            if (device.isLibinput()) {
+                const libinput_device: *c.struct_libinput_device = @ptrCast(device.getLibinputDevice());
+                if (c.libinput_device_config_tap_get_finger_count(libinput_device) != 0) {
+                    _ = c.libinput_device_config_tap_set_enabled(libinput_device, 1);
+                    _ = c.libinput_device_config_tap_set_drag_enabled(libinput_device, 1);
+                    _ = c.libinput_device_config_tap_set_drag_lock_enabled(libinput_device, 1);
+                    _ = c.libinput_device_config_tap_set_button_map(libinput_device, c.LIBINPUT_CONFIG_TAP_MAP_LRM);
+                }
+
+                if (c.libinput_device_config_scroll_has_natural_scroll(libinput_device) != 0)
+                    _ = c.libinput_device_config_scroll_set_natural_scroll_enabled(libinput_device, 0);
+
+                if (c.libinput_device_config_dwt_is_available(libinput_device) != 0)
+                    _ = c.libinput_device_config_dwt_set_enabled(libinput_device, 0);
+
+                if (c.libinput_device_config_left_handed_is_available(libinput_device) != 0)
+                    _ = c.libinput_device_config_left_handed_set(libinput_device, 0);
+
+                if (c.libinput_device_config_middle_emulation_is_available(libinput_device) != 0)
+                    _ = c.libinput_device_config_middle_emulation_set_enabled(libinput_device, 1);
+
+                if (c.libinput_device_config_scroll_get_methods(libinput_device) != c.LIBINPUT_CONFIG_SCROLL_NO_SCROLL)
+                    _ = c.libinput_device_config_scroll_set_method(libinput_device, c.LIBINPUT_CONFIG_SCROLL_2FG);
+
+                if (c.libinput_device_config_click_get_methods(libinput_device) != c.LIBINPUT_CONFIG_CLICK_METHOD_NONE)
+                    _ = c.libinput_device_config_click_set_method(libinput_device, c.LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER);
+
+                if (c.libinput_device_config_send_events_get_modes(libinput_device) != 0)
+                    _ = c.libinput_device_config_send_events_set_mode(libinput_device, c.LIBINPUT_CONFIG_SEND_EVENTS_ENABLED);
+
+                if (c.libinput_device_config_accel_is_available(libinput_device) != 0) {
+                    _ = c.libinput_device_config_accel_set_profile(libinput_device, c.LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE);
+                    _ = c.libinput_device_config_accel_set_speed(libinput_device, 0.5);
+                }
+            }
 
             self.cursor.attachInputDevice(device);
         },

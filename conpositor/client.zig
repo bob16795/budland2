@@ -27,17 +27,15 @@ const ClientFrame = struct {
     shadow_tree: *wlr.SceneTree = undefined,
     sides: [4]*wlr.SceneRect = undefined,
     buffer_scene: *wlr.SceneBuffer = undefined,
-    border_tree: *wlr.SceneTree = undefined,
 
     pub fn init(kind: FrameKind, color: *const [4]f32, client: *Client) !ClientFrame {
         const shadow_scene = client.session.layers.get(.LyrFloatShadows);
 
-        var border_tree = try client.scene.createSceneTree();
         var shadow_tree = try shadow_scene.createSceneTree();
 
         var sides: [4]*wlr.SceneRect = undefined;
         for (&sides) |*side| {
-            side.* = try border_tree.createSceneRect(0, 0, color);
+            side.* = try client.scene.createSceneRect(0, 0, color);
             side.*.node.data = @intFromPtr(client);
         }
 
@@ -58,7 +56,6 @@ const ClientFrame = struct {
             .title_buffer = title_buffer,
             .buffer_scene = try client.scene.createSceneBuffer(locked),
             .shadow_tree = shadow_tree,
-            .border_tree = border_tree,
         };
     }
 };
@@ -229,7 +226,6 @@ fullscreen: bool = false,
 frame: ClientFrame = .{},
 hide_frame: bool = false,
 
-pending_resize: bool = false,
 resize_serial: u32 = 0,
 
 link: wl.list.Link = undefined,
@@ -247,10 +243,10 @@ const SHADOW_SIZE = 10;
 fn sharesTabs(self: *const Client, other: *Client) bool {
     return self == other or
         (self.container == other.container and
-            !self.floating and
-            !other.floating and
-            self.tag == other.tag and
-            self.monitor == other.monitor);
+        !self.floating and
+        !other.floating and
+        self.tag == other.tag and
+        self.monitor == other.monitor);
 }
 
 pub fn updateFrame(self: *Client) !void {
@@ -285,9 +281,6 @@ pub fn updateFrame(self: *Client) !void {
     }
 
     if (self.managed) {
-        const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
-        self.scene.node.reparent(self.session.layers.get(layer));
-
         const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
         self.frame.shadow_tree.node.reparent(self.session.layers.get(shadow_layer));
 
@@ -479,11 +472,11 @@ pub fn init(session: *Session, target: ClientSurface) !void {
 
                 var box =
                     if (objects.client) |client|
-                        client.monitor.?.window
-                    else if (objects.layer_surface) |layer_surface|
-                        layer_surface.monitor.?.mode
-                    else
-                        unreachable;
+                    client.monitor.?.window
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.monitor.?.mode
+                else
+                    unreachable;
 
                 box.x -= if (objects.client) |client|
                     client.bounds.x + client.inner_bounds.x
@@ -715,6 +708,7 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     else
         self.border;
 
+    var setxy = false;
     switch (self.surface) {
         .X11 => |surface| {
             if (surface.size_hints) |hints| {
@@ -726,11 +720,13 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
                         result.height = hints.base_height + y_border;
                     }
 
-                    // x position
+                    // new position
                     if (hints.flags & 0b101 != 0) {
                         result.x = hints.x - x_start;
 
                         result.y = hints.y + y_start;
+
+                        setxy = true;
                     }
 
                     // size
@@ -800,6 +796,11 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     result.width = @max(result.width, 20 + x_border);
     result.height = @max(result.height, 20 + y_border);
 
+    if (!setxy) {
+        result.x = bounds.x + @divTrunc((bounds.width - result.width), 2);
+        result.y = bounds.y + @divTrunc((bounds.height - result.height), 2);
+    }
+
     return result;
 }
 
@@ -832,7 +833,6 @@ pub fn resize(self: *Client, in_target_bounds: wlr.Box) ClientError!void {
     }
 
     self.resize_serial = self.updateSize();
-    self.pending_resize = true;
 
     try self.updateFrame();
 }
@@ -926,6 +926,9 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
 
     self.floating = floating;
 
+    const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
+    self.scene.node.reparent(self.session.layers.get(layer));
+
     if (self.monitor) |m|
         try m.arrangeClients();
 
@@ -965,27 +968,11 @@ pub fn updateSize(self: *Client) u32 {
 }
 
 pub fn commit(self: *Client) !void {
-    if (!self.getSurface().mapped)
-        return;
+    if (self.getSurface().mapped)
+        try self.resize(self.bounds);
 
-    try self.resize(self.bounds);
-
-    switch (self.surface) {
-        .XDG => |surface| {
-            if (self.pending_resize and self.resize_serial <= surface.current.configure_serial)
-                self.pending_resize = false;
-        },
-        .X11 => {
-            self.pending_resize = false;
-        },
-    }
-
-    if (self.session.getObjectsAt(
-        @floatFromInt(self.bounds.x),
-        @floatFromInt(self.bounds.y),
-    ).monitor) |monitor| {
-        try self.setMonitor(monitor);
-    }
+    if (self.resize_serial != 0 and self.resize_serial <= self.surface.XDG.current.configure_serial)
+        self.resize_serial = 0;
 }
 
 pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !void {

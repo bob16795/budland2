@@ -258,9 +258,9 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 
         ok = ok and
             if (is_test)
-            wlr_output.testState(&state)
-        else
-            wlr_output.commitState(&state);
+                wlr_output.testState(&state)
+            else
+                wlr_output.commitState(&state);
 
         std.log.info("move monitor {*}, {} {}", .{ monitor, monitor.mode, monitor.window });
     }
@@ -412,11 +412,12 @@ pub fn init() SessionError!Session {
     const loop = wl_server.getEventLoop();
 
     const backend = try wlr.Backend.autocreate(loop, null);
+    const scene = try wlr.Scene.create();
+
     const renderer = try wlr.Renderer.autocreate(backend);
+    try renderer.initWlShm(wl_server);
 
     const compositor = try wlr.Compositor.create(wl_server, 6, renderer);
-
-    const scene = try wlr.Scene.create();
 
     const layers = std.EnumArray(Layer, *wlr.SceneTree).init(.{
         .LyrBg = try scene.tree.createSceneTree(),
@@ -463,6 +464,7 @@ pub fn init() SessionError!Session {
     const idle_inhibit_manager = try wlr.IdleInhibitManagerV1.create(wl_server);
     const session_lock_manager = try wlr.SessionLockManagerV1.create(wl_server);
     const xdg_decoration_manager = try wlr.XdgDecorationManagerV1.create(wl_server);
+
     const xwayland = try wlr.Xwayland.create(wl_server, compositor, false);
     const output_manager = try wlr.OutputManagerV1.create(wl_server);
 
@@ -719,20 +721,18 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
     const old_focus = input.seat.keyboard_state.focused_surface;
 
     if (lift or !client.floating) {
-        client.scene.node.raiseToTop();
         client.frame.shadow_tree.node.raiseToTop();
-
-        try self.input.motionNotify(0);
+        client.scene.node.raiseToTop();
     }
-
-    client.focus_link.remove();
-    self.focus_clients.prepend(client);
 
     if (client.getSurface() == old_focus)
         return;
 
-    if (client.surface == .X11 and client.managed) {
-        client.surface.X11.restack(null, .above);
+    if (client.managed) {
+        client.focus_link.remove();
+        self.focus_clients.prepend(client);
+        if (client.surface == .X11)
+            client.surface.X11.restack(null, .above);
     }
 
     if (old_focus != null and (client.getSurface() != old_focus)) {
@@ -744,6 +744,7 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
             old.activateSurface(false);
     }
 
+    try self.input.motionNotify(0);
     client.notifyEnter(input.seat, input.seat.getKeyboard());
     client.activateSurface(true);
 }

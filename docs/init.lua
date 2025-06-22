@@ -14,38 +14,57 @@ local terminal = "kitty"
 package.loaded["colors"] = nil
 require("colors")
 
-gaps.setup {inc = 2, toggle = true, value = 8, ratio = 2, outer = 30}
+gaps.setup { inc = 2, toggle = true, value = 8, ratio = 2, outer = 30 }
 mouse.setup {}
 
 -- fonts
 funcs.set_font_pt("CaskaydiaCovePL Nerd Font", 14)
 
-stacks = {a = 1, b = 2, c = 3, d = 4, e = 5}
-tags = {session:new_tag("F1"), session:new_tag("F2"), session:new_tag("F3"), session:new_tag("F4")}
+stacks = { a = 1, b = 2, c = 3, d = 4, e = 5 }
+tags = { session:new_tag("F1"), session:new_tag("F2"), session:new_tag("F3"), session:new_tag("F4") }
 
-abcd_container = session:add_layout("]+>+[")
-abcd_left_container = session:add_layout("]+++[")
+local function setup_abcd(root_container, ab_split, ac_split, bd_split)
+    local bd_container = root_container:add_child(ab_split, 0.0, 1.0, 1.0)
+    local ac_container = root_container:add_child(0.0, 0.0, ab_split, 1.0)
 
-function setup_abcd(root_container, split)
-    local split = split
+    local b_container = bd_container:add_child(0.0, 0.0, 1.0, bd_split)
+    local d_container = bd_container:add_child(0.0, bd_split, 1.0, 1.0)
 
-    bd_container = root_container:add_child(split, 0.0, 1.0, 1.0)
-    ac_container = root_container:add_child(0.0, 0.0, split, 1.0)
-
-    b_container = bd_container:add_child(0.0, 0.0, 1.0, 0.4)
-    d_container = bd_container:add_child(0.0, 0.4, 1.0, 1.0)
-
-    a_container = ac_container:add_child(0.0, 0.0, 1.0, 0.2)
-    c_container = ac_container:add_child(0.0, 0.2, 1.0, 1.0)
+    local a_container = ac_container:add_child(0.0, 0.0, 1.0, ac_split)
+    local c_container = ac_container:add_child(0.0, ac_split, 1.0, 1.0)
 
     a_container:set_stack(stacks.a)
     b_container:set_stack(stacks.b)
+
     c_container:set_stack(stacks.c)
     d_container:set_stack(stacks.d)
 end
 
-setup_abcd(abcd_container, 0.7)
-setup_abcd(abcd_left_container, 0.3)
+local default_layout = session:add_layout("+>+")
+local center_layout = session:add_layout("+|+")
+local lefty_layout = session:add_layout("+<+")
+local default_layout_b = session:add_layout("->-")
+local center_layout_b = session:add_layout("-|-")
+local lefty_layout_b = session:add_layout("-<-")
+
+setup_abcd(default_layout:root(), 0.7, 0.2, 0.4)
+setup_abcd(center_layout:root(), 0.5, 0.2, 0.4)
+setup_abcd(lefty_layout:root(), 0.3, 0.2, 0.4)
+
+setup_abcd(default_layout_b:root(), 0.7, 0.2, 0.7)
+setup_abcd(center_layout_b:root(), 0.5, 0.2, 0.7)
+setup_abcd(lefty_layout_b:root(), 0.3, 0.2, 0.7)
+
+local lefty_cycle = {
+    { default_layout,   center_layout,   lefty_layout },   -- normal b
+    { default_layout_b, center_layout_b, lefty_layout_b }, -- big b
+}
+
+local b_cycle = {
+    { lefty_layout,   lefty_layout_b },   -- lefty
+    { center_layout,  center_layout_b },  -- center
+    { default_layout, default_layout_b }, -- default
+}
 
 -- mouse functions
 local mouse_client = nil
@@ -83,7 +102,9 @@ mouse_move.move = function(position)
 
         mouse_client:set_position(pos)
     else
-        local size = session:active_monitor():get_size()
+        local monitor = session:active_monitor()
+        local size = monitor:get_size()
+        mouse_client:set_monitor(monitor)
         if position.y - size.y < 0.5 * size.height then
             if position.x - size.x < 0.5 * size.width then
                 mouse_client:set_stack(stacks.a)
@@ -113,14 +134,14 @@ session:add_mouse(super, "Left", mouse.bind("move"))
 session:add_mouse(super, "Right", mouse.bind("resize"))
 
 -- programs
-session:add_bind(super, "Return", funcs.spawn(terminal, {"--class=termA"}))
-session:add_bind(super .. "S", "Return", funcs.spawn(terminal, {"--class=termB"}))
-session:add_bind(super .. "C", "Return", funcs.spawn(terminal, {"--class=termB"}))
-session:add_bind(super, "I", funcs.spawn(terminal, {"--class=htop", "-e", "htop"}))
-session:add_bind(super, "M", funcs.spawn(terminal, {"--class=music", "-e", "kew"}))
-session:add_bind(super, "R", funcs.spawn(terminal, {"--class=filesD", "-e", "ranger"}))
-session:add_bind(super .. "S", "R", funcs.spawn(terminal, {"--class=filesB", "-e", "ranger"}))
-session:add_bind(super, "V", funcs.spawn(terminal, {"--class=cava", "-e", "cava"}))
+session:add_bind(super, "Return", funcs.spawn(terminal, { "--class=termA" }))
+session:add_bind(super .. "S", "Return", funcs.spawn(terminal, { "--class=termB" }))
+session:add_bind(super .. "C", "Return", funcs.spawn(terminal, { "--class=termB" }))
+session:add_bind(super, "I", funcs.spawn(terminal, { "--class=htop", "-e", "htop" }))
+session:add_bind(super, "M", funcs.spawn(terminal, { "--class=music", "-e", "kew" }))
+session:add_bind(super, "R", funcs.spawn(terminal, { "--class=filesD", "-e", "ranger" }))
+session:add_bind(super .. "S", "R", funcs.spawn(terminal, { "--class=filesB", "-e", "ranger" }))
+session:add_bind(super, "V", funcs.spawn(terminal, { "--class=cava", "-e", "cava" }))
 
 session:add_bind(super .. "S", "S", funcs.spawn("ss.sh", {}))
 session:add_bind(super, "W", funcs.spawn("chromium", {}))
@@ -128,13 +149,15 @@ session:add_bind(super, "A", funcs.spawn("pavucontrol", {}))
 
 -- launchers
 session:add_bind(super, "D", funcs.spawn("bemenu-launcher", {}))
-session:add_bind(super .. "S", "D", funcs.spawn("j4-dmenu-desktop", {"--dmenu=menu"}))
-session:add_bind(super .. "S", "W", funcs.spawn("bwpcontrol", {"menu"}))
-session:add_bind(super, "T", funcs.spawn("mondocontrol", {"menu"}))
+session:add_bind(super .. "S", "D", funcs.spawn("j4-dmenu-desktop", { "--dmenu=menu" }))
+session:add_bind(super .. "S", "W", funcs.spawn("bwpcontrol", { "menu" }))
+session:add_bind(super, "T", funcs.spawn("mondocontrol", { "menu" }))
 
 -- misc session mgmt
-session:add_bind(super, "H", funcs.cycle_layout(1))
-session:add_bind(super .. "S", "H", funcs.cycle_layout(-1))
+session:add_bind(super, "H", funcs.cycle_layout(1, lefty_cycle))
+session:add_bind(super .. "S", "H", funcs.cycle_layout(-1, lefty_cycle))
+session:add_bind(super, "O", funcs.cycle_layout(1, b_cycle))
+session:add_bind(super .. "S", "O", funcs.cycle_layout(-1, b_cycle))
 session:add_bind(super, "Tab", funcs.cycle_focus(1))
 session:add_bind(super .. "S", "Tab", funcs.cycle_focus(-1))
 session:add_bind(super, "Space", funcs.toggle_floating())
@@ -156,8 +179,8 @@ local client_rule = function(filter, rule)
     local filter = filter
     local rule = rule
     session:add_rule(filter, function(client)
-        if rule.container ~= nil then
-            client:set_container(rule.container)
+        if rule.stack ~= nil then
+            client:set_stack(rule.stack)
         else
             client:set_floating(true)
         end
@@ -171,7 +194,7 @@ local client_rule = function(filter, rule)
 end
 
 session:add_rule({}, function(client)
-    client:set_container(c_container)
+    client:set_stack(stacks.c)
     client:set_floating(true)
     client:set_icon("?")
     client:set_border(3)
@@ -182,31 +205,35 @@ session:add_bind(super, "G", gaps.increase)
 session:add_bind(super .. "S", "G", gaps.decrease)
 session:add_bind(super .. "S", "V", gaps.toggle)
 
-client_rule({appid = "termA"}, {container = a_container, icon = ""})
-client_rule({appid = "termB"}, {container = b_container, icon = ""})
-client_rule({appid = "termF"}, {icon = ""})
-client_rule({appid = "filesB"}, {container = b_container, icon = ""})
-client_rule({appid = "filesD"}, {container = d_container, icon = ""})
-client_rule({appid = "music"}, {container = d_container, icon = ""})
-client_rule({appid = "discord"}, {container = c_container, icon = "Chat"})
-client_rule({appid = "htop"}, {container = c_container, icon = ""})
-client_rule({appid = "Sxiv"}, {container = b_container, icon = ""})
-client_rule({appid = "imv"}, {container = b_container, icon = ""})
-client_rule({appid = "Chromium"}, {container = c_container, icon = ""})
-client_rule({appid = "pavucontrol"}, {container = b_container, icon = ""})
-client_rule({appid = "neovide"}, {container = c_container, icon = ""})
-client_rule({appid = "PrestoEdit"}, {container = c_container, icon = ""})
-client_rule({appid = "Code - Insiders"}, {container = c_container, icon = ""})
-client_rule({appid = "cava"}, {container = b_container, icon = ""})
+client_rule({ appid = "termA" }, { stack = stacks.a, icon = "" })
+client_rule({ appid = "termB" }, { stack = stacks.b, icon = "" })
+client_rule({ appid = "termF" }, { icon = "" })
+client_rule({ appid = "filesB" }, { stack = stacks.b, icon = "" })
+client_rule({ appid = "filesD" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "music" }, { stack = stacks.d, icon = "" })
+client_rule({ appid = "discord" }, { stack = stacks.c, icon = "Chat" })
+client_rule({ appid = "htop" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "Sxiv" }, { stack = stacks.b, icon = "" })
+client_rule({ appid = "imv" }, { stack = stacks.b, icon = "" })
+client_rule({ appid = "Chromium" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "pavucontrol" }, { stack = stacks.b, icon = "" })
+client_rule({ appid = "neovide" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "PrestoEdit" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "Code - Insiders" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "cava" }, { stack = stacks.b, icon = "" })
 
 session:add_hook("startup", function(startup)
     session:spawn("wlr-randr",
-        {"--output", "eDP-1", "--pos", "2560,0", "--output", "DP-4", "--mode", "2560x1080", "--pos", "0,0"})
+        { "--output", "eDP-1", "--pos", "2560,0", "--output", "DP-4", "--mode", "2560x1080", "--pos", "0,0" })
     session:spawn("swww-daemon", {})
     session:spawn("dunst", {})
     session:spawn("waybar", {})
     session:spawn("blueman-applet", {})
     session:spawn("nm-applet", {})
+end)
+
+session:add_hook("add_monitor", function(monitor)
+    monitor:set_layout(default_layout)
 end)
 
 function reload()

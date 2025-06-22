@@ -23,11 +23,24 @@ pub const ConfigError = error{
     LuaError,
 };
 
-pub var gpa: std.heap.GeneralPurposeAllocator(.{
-    .thread_safe = true,
-    .stack_trace_frames = 15,
-}) = .{};
-pub const allocator = gpa.allocator();
+pub const allocator_data = if (@import("builtin").mode == .Debug) struct {
+    var gpa: std.heap.GeneralPurposeAllocator(.{
+        .thread_safe = true,
+        .stack_trace_frames = 15,
+    }) = .{};
+    pub const allocator = gpa.allocator();
+
+    pub fn deinit() void {
+        if (gpa.deinit() == .ok)
+            std.log.debug("no leaks! :)", .{});
+    }
+} else struct {
+    pub const allocator = std.heap.c_allocator;
+
+    pub fn deinit() void {}
+};
+
+pub const allocator = allocator_data.allocator;
 
 const PaletteColor = enum { border, background, foreground };
 const Event = enum {
@@ -60,7 +73,7 @@ font: FontInfo,
 title_pad: i32 = 3,
 active_colors: std.EnumArray(PaletteColor, [4]f32) = .initFill(.{ 1, 1, 1, 1 }),
 inactive_colors: std.EnumArray(PaletteColor, [4]f32) = .initFill(.{ 1, 1, 1, 1 }),
-layouts: std.ArrayList(Layout) = .init(allocator),
+layouts: std.ArrayList(*Layout) = .init(allocator),
 tags: std.ArrayList([:0]const u8) = .init(allocator),
 binds: std.AutoHashMap(BindData, LuaClosure) = .init(allocator),
 mouse_binds: std.AutoHashMap(MouseBindData, LuaClosure) = .init(allocator),
@@ -296,6 +309,28 @@ const LuaContainer = struct {
     }
 };
 
+const LuaLayout = struct {
+    child: *Layout,
+
+    pub fn lua_root(self: *LuaLayout) LuaContainer {
+        return .{
+            .child = self.child.container,
+        };
+    }
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaLayout {
+        const result = try lua.toUserdata(LuaLayout, index);
+        return result.*;
+    }
+
+    pub fn toLua(self: LuaLayout, lua: *Lua) !void {
+        const tmp = lua.newUserdata(LuaLayout, 0);
+        tmp.* = self;
+
+        lua.setMetatableRegistry("Layout");
+    }
+};
+
 pub const LuaMonitor = struct {
     child: *Monitor,
 
@@ -318,14 +353,16 @@ pub const LuaMonitor = struct {
         std.log.info("set tag {}", .{tag.id});
     }
 
-    pub fn lua_get_layout(self: *LuaMonitor) !i32 {
-        return @intCast(self.child.layout);
+    pub fn lua_get_layout(self: *LuaMonitor) ?LuaLayout {
+        return .{
+            .child = self.child.layout orelse return null,
+        };
     }
 
-    pub fn lua_set_layout(self: *LuaMonitor, layout: i32) !void {
-        try self.child.setLayout(layout);
-
+    pub fn lua_set_layout(self: *LuaMonitor, layout: LuaLayout) !void {
         std.log.info("set layout {}", .{layout});
+
+        try self.child.setLayout(layout.child);
     }
 
     pub fn lua_set_inner_gaps(self: *LuaMonitor, size: i32) !void {
@@ -385,6 +422,10 @@ const LuaClient = struct {
 
     pub fn lua_set_tag(self: *LuaClient, tag: *LuaTag) !void {
         try self.child.setTag(tag.id);
+    }
+
+    pub fn lua_set_monitor(self: *LuaClient, monitor: LuaMonitor) !void {
+        try self.child.setMonitor(monitor.child);
     }
 
     pub fn lua_set_stack(self: *LuaClient, stack: u8) !void {
@@ -528,7 +569,7 @@ pub fn lua_set_font(self: *Config, face: []const u8, size: f32) !void {
     std.log.info("set font {}", .{self.font});
 }
 
-pub fn lua_add_layout(self: *Config, name: []const u8) !LuaContainer {
+pub fn lua_add_layout(self: *Config, name: []const u8) !LuaLayout {
     const container = try allocator.create(Layout.Container);
 
     container.* = .{
@@ -537,12 +578,16 @@ pub fn lua_add_layout(self: *Config, name: []const u8) !LuaContainer {
         .children = &.{},
     };
 
-    try self.layouts.append(.{
+    const layout = try allocator.create(Layout);
+
+    layout.* = .{
         .name = try allocator.dupeZ(u8, name),
         .container = container,
-    });
+    };
 
-    return .{ .child = container };
+    try self.layouts.append(layout);
+
+    return .{ .child = layout };
 }
 
 pub fn lua_new_tag(self: *Config, name: [:0]const u8) !LuaTag {
@@ -786,6 +831,16 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
     try lua.newMetatable(name);
     lua.pushValue(-2);
     lua.setField(-2, "__index");
+
+    if (@hasDecl(T, "fromLua")) {
+        const Compare = struct {
+            fn eq(a: T, b: T) bool {
+                return std.meta.eql(a, b);
+            }
+        };
+        lua.autoPushFunction(Compare.eq);
+        lua.setField(-2, "__eq");
+    }
     lua.pop(1);
 
     lua.setGlobal(name);
@@ -861,6 +916,7 @@ pub fn setupLua(self: *Config) ConfigError!void {
 
     try globalType(self.lua, Config, "Session");
     try globalType(self.lua, LuaContainer, "Container");
+    try globalType(self.lua, LuaLayout, "Layout");
     try globalType(self.lua, LuaClient, "Client");
     try globalType(self.lua, LuaMonitor, "Monitor");
     try globalType(self.lua, LuaStack, "Stack");
@@ -941,7 +997,7 @@ pub fn getColor(self: *Config, active: bool, palette: PaletteColor) *const [4]f3
         return self.inactive_colors.getPtrConst(palette);
 }
 
-pub fn getLayouts(self: *Config) []Layout {
+pub fn getLayouts(self: *Config) []*Layout {
     return self.layouts.items;
 }
 
@@ -1024,7 +1080,7 @@ pub fn sendEvent(self: *Config, comptime T: type, event_id: Event, data: T) Conf
 }
 
 pub fn deinit(self: *Config) void {
-    for (self.layouts.items) |*layout|
+    for (self.layouts.items) |layout|
         layout.deinit();
 
     for (self.rules.items) |rule|

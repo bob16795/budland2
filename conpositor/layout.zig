@@ -171,4 +171,5 @@ pub fn getSize(
 pub fn deinit(self: *Layout) void {
     self.container.deinit();
     allocator.free(self.name);
+    allocator.destroy(self);
 }

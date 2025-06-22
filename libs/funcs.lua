@@ -73,14 +73,29 @@ function M.set_client_stack(stack)
     end
 end
 
-function M.cycle_layout(direction)
+function M.cycle_layout(direction, lists)
     local direction = direction
+    local lists = lists
     return function()
         local monitor = session:active_monitor()
+        local current_layout = monitor:get_layout()
         if monitor then
-            local layout = monitor:get_layout()
-            monitor:set_layout(layout + direction)
+            for _, list in pairs(lists) do
+                for i, v in pairs(list) do
+                    if v == current_layout then
+                        local idx = i + direction - 1
+                        while idx < 0 do
+                            idx = idx + #list
+                        end
+
+                        monitor:set_layout(list[(idx % #list) + 1])
+                        return
+                    end
+                end
+            end
         end
+
+        print("didnt cycle")
     end
 end
 

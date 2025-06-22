@@ -3,6 +3,7 @@ pub usingnamespace @cImport({
 
     @cInclude("stdlib.h");
     @cInclude("unistd.h");
+    @cInclude("libinput.h");
 
     @cInclude("xcb/xcb.h");
 });
