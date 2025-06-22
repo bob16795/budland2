@@ -21,7 +21,7 @@ surface_id: u8 = 25,
 
 session: *Session,
 monitor: ?*Monitor,
-events: LayerSurfaceEvents,
+events: LayerSurfaceEvents = .{},
 
 surface: *wlr.LayerSurfaceV1,
 scene: *wlr.SceneLayerSurfaceV1,
@@ -67,47 +67,52 @@ const Listeners = struct {
     }
 };
 
-pub fn init(self: *LayerSurface, session: *Session, surf: *wlr.LayerSurfaceV1) !void {
-    self.events = .{};
+pub fn create(session: *Session, surf: *wlr.LayerSurfaceV1) !void {
+    const monitor: *Monitor = @as(?*Monitor, @ptrFromInt(surf.output.?.data)) orelse session.focusedMonitor orelse {
+        surf.destroy();
+        return;
+    };
 
-    surf.data = @intFromPtr(self);
-
-    surf.surface.events.map.add(&self.events.map_event);
-    surf.surface.events.unmap.add(&self.events.unmap_event);
-    surf.surface.events.commit.add(&self.events.commit_event);
-    surf.surface.events.destroy.add(&self.events.deinit_event);
-
-    const monitor: *Monitor = @ptrFromInt(surf.output.?.data);
     const parent_scene = session.layers.get(@enumFromInt(@intFromEnum(surf.pending.layer)));
+    const popups = try parent_scene.createSceneTree();
     const scene = try parent_scene.createSceneLayerSurfaceV1(surf);
     const scene_tree = scene.tree;
-    const popups = try parent_scene.createSceneTree();
 
-    scene_tree.node.data = @intFromPtr(self);
+    surf.output = monitor.output;
 
-    self.* = .{
+    const result = try allocator.create(LayerSurface);
+    scene_tree.node.data = @intFromPtr(result);
+    surf.data = @intFromPtr(result);
+
+    result.* = .{
         .surface = surf,
+        .session = session,
+        .monitor = monitor,
         .scene = scene,
         .scene_tree = scene_tree,
         .popups = popups,
-        .session = session,
         .mapped = false,
-        .events = self.events,
-        .monitor = monitor,
     };
 
-    monitor.layers[@intCast(@intFromEnum(surf.pending.layer))].append(self);
+    surf.surface.events.map.add(&result.events.map_event);
+    surf.surface.events.unmap.add(&result.events.unmap_event);
+    surf.surface.events.commit.add(&result.events.commit_event);
+    surf.surface.events.destroy.add(&result.events.deinit_event);
+
+    monitor.layers[@intCast(@intFromEnum(surf.pending.layer))].append(result);
 
     const old_state = surf.current;
     surf.current = surf.pending;
-    self.mapped = true;
+    result.mapped = true;
     try monitor.arrangeLayers();
     surf.current = old_state;
+
+    std.log.info("tracking surface {*} as {*}", .{ surf, result });
 }
 
 pub fn map(self: *LayerSurface) !void {
     // self.surface.surface.sendEnter(self.monitor.output);
-    try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
+    try self.session.input.motionNotify(0);
 }
 
 pub fn commit(self: *LayerSurface) !void {
@@ -152,7 +157,7 @@ pub fn unmap(self: *LayerSurface) !void {
     if (self.monitor) |m|
         try m.arrangeLayers();
 
-    self.session.input.motionNotify(0, null, 0, 0, 0, 0) catch {};
+    try self.session.input.motionNotify(0);
 }
 
 pub fn deinit(self: *LayerSurface) void {

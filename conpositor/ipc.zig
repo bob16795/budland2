@@ -89,7 +89,7 @@ fn handleSessionRequest(
             resource.destroy();
         },
         .get_focused_output => |req| {
-            if (session.selmon) |monitor| {
+            if (session.focusedMonitor) |monitor| {
                 const resource = conpositor.IpcOutputV1.create(
                     manager.getClient(),
                     manager.getVersion(),
@@ -120,7 +120,9 @@ fn handleOutputRequest(
     request: conpositor.IpcOutputV1.Request,
     _: ?*anyopaque,
 ) void {
+    _ = manager;
     switch (request) {
-        .destroy => manager.destroy(),
+        else => {},
+        // .destroy => manager.destroy(),
     }
 }

@@ -80,7 +80,7 @@ clients: wl.list.Head(Client, .link) = undefined,
 focus_clients: wl.list.Head(Client, .focus_link) = undefined,
 exclusive_focus: ?*wlr.Surface = null,
 
-selmon: ?*Monitor = null,
+focusedMonitor: ?*Monitor = null,
 
 layout_change_event: wl.Listener(*wlr.OutputLayout) = .init(Listeners.layoutChange),
 xwayland_ready_event: wl.Listener(void) = .init(Listeners.xwayland_ready),
@@ -246,18 +246,21 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 
             if (monitor.mode.x != config_head.state.x or
                 monitor.mode.y != config_head.state.y)
-                _ = try self.output_layout.add(monitor.output, config_head.state.x, config_head.state.y);
+            {
+                const layout_output = try self.output_layout.add(monitor.output, config_head.state.x, config_head.state.y);
+                monitor.scene_output.setPosition(layout_output.x, layout_output.y);
+            }
 
             state.setTransform(config_head.state.transform);
             state.setScale(config_head.state.scale);
             state.setAdaptiveSyncEnabled(config_head.state.adaptive_sync_enabled);
         }
 
-        if (is_test) {
-            ok = ok and wlr_output.testState(&state);
-        } else {
-            ok = ok and wlr_output.commitState(&state);
-        }
+        ok = ok and
+            if (is_test)
+            wlr_output.testState(&state)
+        else
+            wlr_output.commitState(&state);
 
         std.log.info("move monitor {*}, {} {}", .{ monitor, monitor.mode, monitor.window });
     }
@@ -276,21 +279,7 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 fn newLayerSurfaceClient(self: *Session, surface: *wlr.LayerSurfaceV1) !void {
     std.log.info("new layer surface {*}", .{surface});
 
-    if (surface.output == null)
-        surface.output = if (self.selmon != null) self.selmon.?.output else null;
-
-    if (surface.output == null) {
-        std.log.info("cancel new layer surface {*} no monitors", .{surface});
-
-        surface.destroy();
-
-        return;
-    }
-
-    const layer_surface = try allocator.create(LayerSurface);
-    try layer_surface.init(self, surface);
-
-    std.log.info("tracking surface {*}", .{layer_surface});
+    try LayerSurface.create(self, surface);
 }
 
 fn newClient(self: *Session, surface: Client.ClientSurface) !void {
@@ -556,9 +545,11 @@ pub fn launch(self: *Session) SessionError!void {
 
     try self.backend.start();
 
-    try self.config.sendEvent(?*anyopaque, .startup, null);
+    _ = try self.config.sendEvent(?*anyopaque, .startup, null);
 
-    self.selmon = self.getObjectsAt(self.input.cursor.x, self.input.cursor.y).monitor;
+    if (self.getObjectsAt(self.input.cursor.x, self.input.cursor.y).monitor) |monitor|
+        try self.focusMonitor(monitor);
+
     self.input.cursor.setXcursor(self.input.xcursor_manager, "default");
 
     self.server.run();
@@ -581,6 +572,8 @@ pub fn updateMons(self: *Session) !void {
 
             self.output_layout.remove(monitor.output);
             try monitor.close();
+            monitor.mode = std.mem.zeroes(wlr.Box);
+            monitor.window = std.mem.zeroes(wlr.Box);
         }
     }
 
@@ -589,7 +582,10 @@ pub fn updateMons(self: *Session) !void {
         while (iter.next()) |monitor| {
             if (monitor.output.enabled and
                 self.output_layout.get(monitor.output) == null)
-                _ = try self.output_layout.addAuto(monitor.output);
+            {
+                const layout_output = try self.output_layout.addAuto(monitor.output);
+                monitor.scene_output.setPosition(layout_output.x, layout_output.y);
+            }
         }
     }
 
@@ -607,8 +603,6 @@ pub fn updateMons(self: *Session) !void {
             self.output_layout.getBox(monitor.output, &monitor.mode);
             monitor.window = monitor.mode;
 
-            monitor.scene_output.setPosition(monitor.mode.x, monitor.mode.y);
-
             try monitor.arrangeLayers();
 
             // TODO: update fullscreen client
@@ -620,7 +614,7 @@ pub fn updateMons(self: *Session) !void {
         }
     }
 
-    if (self.selmon) |selected| {
+    if (self.focusedMonitor) |selected| {
         if (selected.output.enabled) {
             var iter = self.clients.iterator(.forward);
             while (iter.next()) |client| {
@@ -640,7 +634,7 @@ pub fn updateMons(self: *Session) !void {
 }
 
 pub fn focusedClient(self: *Session) ?*Client {
-    const selected = self.selmon orelse return null;
+    const selected = self.focusedMonitor orelse return null;
 
     return selected.focusedClient();
 }
@@ -724,16 +718,19 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
 
     const old_focus = input.seat.keyboard_state.focused_surface;
 
-    if (lift)
+    if (lift or !client.floating) {
         client.scene.node.raiseToTop();
+        client.frame.shadow_tree.node.raiseToTop();
 
-    if (client.getSurface() == old_focus)
-        return;
+        try self.input.motionNotify(0);
+    }
 
     client.focus_link.remove();
     self.focus_clients.prepend(client);
 
-    self.selmon = client.monitor;
+    if (client.getSurface() == old_focus)
+        return;
+
     if (client.surface == .X11 and client.managed) {
         client.surface.X11.restack(null, .above);
     }
@@ -747,16 +744,8 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
             old.activateSurface(false);
     }
 
-    try self.input.motionNotify(0, null, 0, 0, 0, 0);
-
     client.notifyEnter(input.seat, input.seat.getKeyboard());
     client.activateSurface(true);
-
-    client.scene.node.raiseToTop();
-    client.frame.shadow_tree.node.raiseToTop();
-
-    if (self.selmon) |selmon|
-        selmon.sendFocus();
 }
 
 pub fn focusClear(self: *Session) void {
@@ -822,11 +811,12 @@ pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
 }
 
 pub fn focusStack(self: *Session, dir: CycleDir) !void {
-    const selmon = self.selmon orelse return;
-    const sel = selmon.focusedClient() orelse return;
+    const sel = self.focusedClient() orelse return;
 
     if (sel.fullscreen)
         return;
+
+    const selmon = sel.monitor orelse return;
 
     const target = switch (dir) {
         .forward => blk: {
@@ -836,7 +826,8 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
                 if (&client.link == &self.clients.link)
                     continue;
                 if (selmon.clientVisible(client) and
-                    client.container == sel.container)
+                    client.container == sel.container and
+                    client.floating == sel.floating)
                     break :blk client;
             }
 
@@ -849,7 +840,8 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
                 if (&client.link == &self.clients.link)
                     continue;
                 if (selmon.clientVisible(client) and
-                    client.container == sel.container)
+                    client.container == sel.container and
+                    client.floating == sel.floating)
                     break :blk client;
             }
 
@@ -911,4 +903,11 @@ fn xwayland_ready(self: *Session, xwayland: *wlr.Xwayland) !void {
     self.net_atoms.set(.window_type_splash, getAtom(xc, "_NET_WM_WINDOW_TYPE_SPLASH"));
     self.net_atoms.set(.window_type_toolbar, getAtom(xc, "_NET_WM_WINDOW_TYPE_TOOLBAR"));
     self.net_atoms.set(.window_type_utility, getAtom(xc, "_NET_WM_WINDOW_TYPE_UTILITY"));
+}
+
+pub fn focusMonitor(self: *Session, monitor: *Monitor) !void {
+    if (self.focusedMonitor == monitor) return;
+    if (!monitor.output.enabled) return;
+
+    self.focusedMonitor = monitor;
 }

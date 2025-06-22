@@ -20,6 +20,7 @@ pub const ConfigError = error{
     LuaFile,
     LuaRuntime,
     LuaMsgHandler,
+    LuaError,
 };
 
 pub var gpa: std.heap.GeneralPurposeAllocator(.{
@@ -29,7 +30,12 @@ pub var gpa: std.heap.GeneralPurposeAllocator(.{
 pub const allocator = gpa.allocator();
 
 const PaletteColor = enum { border, background, foreground };
-const Event = enum { startup, add_monitor };
+const Event = enum {
+    startup,
+    add_monitor,
+    mouse_move,
+    mouse_release,
+};
 
 const FontInfo = struct {
     face: [:0]const u8,
@@ -38,6 +44,11 @@ const FontInfo = struct {
     pub fn deinit(self: *FontInfo) void {
         allocator.free(self.face);
     }
+};
+
+const MouseBindData = struct {
+    mods: wlr.Keyboard.ModifierMask,
+    button: u32,
 };
 
 const BindData = struct {
@@ -50,14 +61,15 @@ title_pad: i32 = 3,
 active_colors: std.EnumArray(PaletteColor, [4]f32) = .initFill(.{ 1, 1, 1, 1 }),
 inactive_colors: std.EnumArray(PaletteColor, [4]f32) = .initFill(.{ 1, 1, 1, 1 }),
 layouts: std.ArrayList(Layout) = .init(allocator),
-tags: std.ArrayList([*:0]const u8) = .init(allocator),
-binds: std.AutoHashMap(BindData, i32) = .init(allocator),
+tags: std.ArrayList([:0]const u8) = .init(allocator),
+binds: std.AutoHashMap(BindData, LuaClosure) = .init(allocator),
+mouse_binds: std.AutoHashMap(MouseBindData, LuaClosure) = .init(allocator),
 
 // TODO: better structure?
-rules: std.ArrayList(struct { filter: LuaFilter, calls: i32 }) = .init(allocator),
+rules: std.ArrayList(struct { filter: LuaFilter, calls: LuaClosure }) = .init(allocator),
 
 // TODO: Hash Map
-events: std.ArrayList(struct { event: Event, calls: i32 }) = .init(allocator),
+events: std.ArrayList(struct { event: Event, calls: LuaClosure }) = .init(allocator),
 lua: *Lua = undefined,
 
 const LuaFilter = struct {
@@ -78,16 +90,18 @@ const LuaFilter = struct {
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaFilter {
         _ = lua.getField(index, "title");
-        const title = lua.toAny(?[]const u8, -1) catch null;
-        defer lua.pop(1);
+        const lua_title = lua.toAny(?[]const u8, -1) catch null;
+        const title = if (lua_title) |new_title| try allocator.dupe(u8, new_title) else null;
+        lua.pop(1);
 
-        _ = lua.getField(index - 1, "appid");
-        const appid = lua.toAny(?[]const u8, -1) catch null;
-        defer lua.pop(1);
+        _ = lua.getField(index, "appid");
+        const lua_appid = lua.toAny(?[]const u8, -1) catch null;
+        const appid = if (lua_appid) |new_appid| try allocator.dupe(u8, new_appid) else null;
+        lua.pop(1);
 
         return .{
-            .title = if (title) |new_title| try allocator.dupe(u8, new_title) else null,
-            .appid = if (appid) |new_appid| try allocator.dupe(u8, new_appid) else null,
+            .title = title,
+            .appid = appid,
         };
     }
 
@@ -97,6 +111,128 @@ const LuaFilter = struct {
 
         if (self.appid) |appid|
             allocator.free(appid);
+    }
+};
+
+pub const LuaClosure = struct {
+    ref: i32,
+    lua: *Lua,
+
+    pub fn deinit(self: LuaClosure) void {
+        self.lua.unref(zlua.registry_index, self.ref);
+    }
+
+    pub fn toLua(self: LuaClosure, lua: *Lua) !void {
+        _ = lua.rawGetIndex(zlua.registry_index, self.ref);
+        _ = lua.rawGetIndex(-1, 1);
+        lua.remove(-2);
+    }
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaClosure {
+        if (!lua.isFunction(index)) return error.LuaError;
+        lua.pushValue(index); // func
+        lua.newTable(); // func table
+        lua.pushValue(-2); // func table func
+        lua.rawSetIndex(-2, 1); // func table
+
+        var info: zlua.DebugInfo = undefined;
+        lua.pushValue(-2); // func table func
+        lua.getInfo(.{ .@">" = true, .u = true }, &info); // func table
+
+        for (1..info.num_upvalues + 1) |v| {
+            _ = try lua.getUpvalue(-2, @intCast(v)); // func table upv
+            lua.rawSetIndex(-2, @intCast(v + 1)); // func table
+        }
+
+        const r = try lua.ref(zlua.registry_index); // func
+        lua.pop(1);
+
+        return .{
+            .lua = lua,
+            .ref = r,
+        };
+    }
+};
+
+pub const LuaRect = struct {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaRect {
+        const top = lua.getTop();
+        defer lua.setTop(top);
+
+        lua.pushValue(index);
+
+        _ = lua.getField(-1, "x");
+        const x = lua.toNumber(-1) catch 0;
+        lua.pop(1);
+
+        _ = lua.getField(-1, "y");
+        const y = lua.toNumber(-1) catch 0;
+        lua.pop(1);
+
+        _ = lua.getField(-1, "width");
+        const w = lua.toNumber(-1) catch 0;
+        lua.pop(1);
+
+        _ = lua.getField(-1, "height");
+        const h = lua.toNumber(-1) catch 0;
+        lua.pop(1);
+
+        return .{
+            .x = x,
+            .y = y,
+            .width = w,
+            .height = h,
+        };
+    }
+
+    pub fn toLua(self: LuaRect, lua: *Lua) !void {
+        lua.newTable();
+        lua.pushNumber(self.x);
+        lua.setField(-2, "x");
+        lua.pushNumber(self.y);
+        lua.setField(-2, "y");
+        lua.pushNumber(self.width);
+        lua.setField(-2, "width");
+        lua.pushNumber(self.height);
+        lua.setField(-2, "height");
+    }
+};
+
+pub const LuaVec = struct {
+    x: f64,
+    y: f64,
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaVec {
+        const top = lua.getTop();
+        defer lua.setTop(top);
+
+        lua.pushValue(index);
+
+        _ = lua.getField(-1, "x");
+        const x = lua.toNumber(f64, -1) catch 0;
+        lua.pop(1);
+
+        _ = lua.getField(-1, "y");
+        const y = lua.toNumber(f64, -1) catch 0;
+        lua.pop(1);
+
+        return .{
+            .x = x,
+            .y = y,
+        };
+    }
+
+    pub fn toLua(self: LuaVec, lua: *Lua) !void {
+        lua.newTable();
+        lua.pushNumber(self.x);
+        lua.setField(-2, "x");
+        lua.pushNumber(self.y);
+        lua.setField(-2, "y");
     }
 };
 
@@ -163,6 +299,15 @@ const LuaContainer = struct {
 pub const LuaMonitor = struct {
     child: *Monitor,
 
+    pub fn lua_get_size(self: *LuaMonitor) !LuaRect {
+        return .{
+            .x = @floatFromInt(self.child.mode.x),
+            .y = @floatFromInt(self.child.mode.y),
+            .width = @floatFromInt(self.child.mode.width),
+            .height = @floatFromInt(self.child.mode.height),
+        };
+    }
+
     pub fn lua_get_tag(self: *LuaMonitor) !LuaTag {
         return .{ .id = self.child.tag };
     }
@@ -207,15 +352,34 @@ pub const LuaMonitor = struct {
 const LuaClient = struct {
     child: *Client,
 
+    pub fn lua_get_position(self: *LuaClient) !LuaRect {
+        return .{
+            .x = @floatFromInt(self.child.bounds.x),
+            .y = @floatFromInt(self.child.bounds.y),
+            .width = @floatFromInt(self.child.bounds.width),
+            .height = @floatFromInt(self.child.bounds.height),
+        };
+    }
+
+    pub fn lua_set_position(self: *LuaClient, target: LuaRect) !void {
+        try self.child.setFloating(true);
+        try self.child.resize(.{
+            .x = @intFromFloat(target.x),
+            .y = @intFromFloat(target.y),
+            .width = @intFromFloat(target.width),
+            .height = @intFromFloat(target.height),
+        });
+    }
+
     pub fn lua_set_border(self: *LuaClient, border: i32) !void {
         try self.child.setBorder(border);
     }
 
-    pub fn lua_set_icon(self: *LuaClient, icon: ?[*:0]const u8) !void {
-        try self.child.setIcon(icon);
+    pub fn lua_set_icon(self: *LuaClient, icon: ?[:0]const u8) !void {
+        try self.child.setIcon(@ptrCast(icon));
     }
 
-    pub fn lua_set_label(self: *LuaClient, label: ?[*:0]const u8) !void {
+    pub fn lua_set_label(self: *LuaClient, label: ?[:0]const u8) !void {
         try self.child.setLabel(label);
     }
 
@@ -321,25 +485,26 @@ pub fn cleanupChild() void {
     }
 }
 
-pub fn lua_spawn(_: *Config, name: []const u8, args: [][]const u8) !void {
-    const new_args = try std.mem.concat(allocator, []const u8, &.{ &.{name}, args });
-    defer allocator.free(new_args);
-
-    const child_cmd = try std.mem.joinZ(allocator, " ", new_args);
-    defer allocator.free(child_cmd);
-
-    const child_args = [_:null]?[*:0]const u8{ "/bin/sh", "-c", child_cmd, null };
-
+pub fn lua_spawn(_: *Config, name: [:0]const u8, args: [][*:0]const u8) !void {
     const pid = std.posix.fork() catch {
         return error.Other;
     };
 
     if (pid == 0) {
+        const child_args: [:null]?[*:0]const u8 = (try std.mem.concatWithSentinel(allocator, ?[*:0]const u8, &.{ &.{name}, args }, null));
+        const child_name = try allocator.dupeZ(u8, name);
+
+        for (child_args) |arg|
+            std.log.info("run {?s}", .{arg});
+
         cleanupChild();
 
         const pid2 = std.posix.fork() catch c._exit(1);
         if (pid2 == 0) {
-            std.posix.execveZ("/bin/sh", &child_args, std.c.environ) catch c._exit(1);
+            std.posix.execvpeZ(child_name, child_args, std.c.environ) catch c._exit(1);
+
+            allocator.free(child_args);
+            allocator.free(child_name);
         }
 
         c._exit(0);
@@ -349,9 +514,7 @@ pub fn lua_spawn(_: *Config, name: []const u8, args: [][]const u8) !void {
     const ret = std.posix.waitpid(pid, 0);
     if (!std.posix.W.IFEXITED(ret.status) or
         (std.posix.W.IFEXITED(ret.status) and std.posix.W.EXITSTATUS(ret.status) != 0))
-    {
-        return error.Other;
-    }
+    {}
 }
 
 pub fn lua_set_font(self: *Config, face: []const u8, size: f32) !void {
@@ -382,10 +545,11 @@ pub fn lua_add_layout(self: *Config, name: []const u8) !LuaContainer {
     return .{ .child = container };
 }
 
-pub fn lua_new_tag(self: *Config, name: [*:0]const u8) !LuaTag {
-    try self.tags.append(name);
+pub fn lua_new_tag(self: *Config, name: [:0]const u8) !LuaTag {
+    const name_dup = try allocator.dupeZ(u8, name);
+    try self.tags.append(name_dup);
 
-    std.log.info("create tag {s}", .{name});
+    std.log.info("create tag {s}", .{name_dup});
 
     return .{ .id = @intCast(self.tags.items.len - 1) };
 }
@@ -447,7 +611,7 @@ pub fn lua_active_monitor(self: *Config) ?LuaMonitor {
     const session: *Session = @fieldParentPtr("config", self);
 
     return .{
-        .child = session.selmon orelse return null,
+        .child = session.focusedMonitor orelse return null,
     };
 }
 
@@ -471,22 +635,16 @@ pub fn lua_is_debug() bool {
 
 pub fn luaraw_add_hook(lua: *Lua) !i32 {
     const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
-    const event_name = lua.toAny([]const u8, -2) catch lua.raiseErrorStr("Not a string", .{});
+    const event_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
+    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+    errdefer calls.deinit();
 
-    {
-        const event_id = std.meta.stringToEnum(Event, event_name) orelse return error.BadEventName;
+    const event_id = std.meta.stringToEnum(Event, event_name) orelse return error.BadEventName;
 
-        _ = lua.getMetatableRegistry("Events");
-        defer lua.pop(1);
-
-        _ = lua.pushValue(-2);
-        const calls = try lua.ref(-2);
-
-        try self.events.append(.{
-            .event = event_id,
-            .calls = calls,
-        });
-    }
+    try self.events.append(.{
+        .event = event_id,
+        .calls = calls,
+    });
 
     return 0;
 }
@@ -494,27 +652,62 @@ pub fn luaraw_add_hook(lua: *Lua) !i32 {
 pub fn luaraw_add_rule(lua: *Lua) !i32 {
     const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
     const filter = lua.toAny(LuaFilter, -2) catch lua.raiseErrorStr("Not a lua filter", .{});
+    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+    errdefer calls.deinit();
 
-    {
-        _ = lua.getMetatableRegistry("Rules");
-        defer lua.pop(1);
+    try self.rules.append(.{
+        .filter = filter,
+        .calls = calls,
+    });
 
-        _ = lua.pushValue(-2);
-        const calls = try lua.ref(-2);
+    return 0;
+}
 
-        try self.rules.append(.{
-            .filter = filter,
-            .calls = calls,
-        });
+pub fn luaraw_add_mouse(lua: *Lua) !i32 {
+    const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
+    const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Mods not a string", .{});
+    const key_name = lua.toString(-2) catch lua.raiseErrorStr("Button not a string", .{});
+    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+    errdefer calls.deinit();
+
+    var mods: wlr.Keyboard.ModifierMask = .{};
+
+    for (mod_names) |m| {
+        switch (std.ascii.toLower(m)) {
+            'c' => mods.ctrl = true,
+            's' => mods.shift = true,
+            'l' => mods.logo = true,
+            'a' => mods.alt = true,
+            else => {},
+        }
     }
+
+    const button: u32 = if (std.mem.eql(u8, key_name, "Left"))
+        272
+    else if (std.mem.eql(u8, key_name, "Right"))
+        273
+    else
+        return error.InvalidMouseButton;
+
+    const key: MouseBindData = .{
+        .button = button,
+        .mods = mods,
+    };
+
+    if (try self.mouse_binds.fetchPut(key, calls)) |value|
+        value.value.deinit();
+
+    std.log.info("set mouse bind {}", .{key});
 
     return 0;
 }
 
 pub fn luaraw_add_bind(lua: *Lua) !i32 {
     const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
-    const mod_names = lua.toAny([]const u8, -3) catch lua.raiseErrorStr("Not a string", .{});
-    const key_name = lua.toAny([*:0]const u8, -2) catch lua.raiseErrorStr("Not a string", .{});
+    const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Not a string", .{});
+    const key_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
+    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+    errdefer calls.deinit();
 
     var mods: wlr.Keyboard.ModifierMask = .{};
 
@@ -529,27 +722,13 @@ pub fn luaraw_add_bind(lua: *Lua) !i32 {
     }
 
     {
-        _ = lua.getMetatableRegistry("Binds");
-        defer lua.pop(1);
-
-        _ = lua.pushValue(-2);
-        const calls = try lua.ref(-2);
-
         const key: BindData = .{
             .key = xkb.Keysym.fromName(key_name, .case_insensitive),
             .mods = mods,
         };
 
-        if (self.binds.getPtr(key)) |value| {
-            lua.unref(-1, value.*);
-
-            value.* = calls;
-            std.log.info("set bind {}", .{key});
-
-            return 0;
-        }
-
-        try self.binds.put(key, calls);
+        if (try self.binds.fetchPut(key, calls)) |value|
+            value.value.deinit();
 
         std.log.info("create bind {}", .{key});
     }
@@ -569,8 +748,6 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
     // create my method table
     lua.newTable();
 
-    std.log.info("add type " ++ name, .{});
-
     inline for (info.@"struct".decls) |decl| {
         if (comptime std.mem.startsWith(u8, decl.name, "lua_")) {
             const new_name = decl.name[4..];
@@ -580,7 +757,6 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
             const field_info = @typeInfo(field_type);
             switch (field_info) {
                 .@"fn" => {
-                    std.log.info("add function " ++ new_name, .{});
                     lua.autoPushFunction(field_value);
                     lua.setField(-2, new_name);
                 },
@@ -594,7 +770,6 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
             const field_info = @typeInfo(field_type);
             switch (field_info) {
                 .@"fn" => {
-                    std.log.info("add raw function " ++ new_name, .{});
                     lua.pushFunction(zlua.wrap(field_value));
                     lua.setField(-2, new_name);
                 },
@@ -602,14 +777,13 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
             }
         }
     }
+
     lua.newTable();
     lua.autoPushFunction(roFunction);
     lua.setField(-2, "__new_index");
     lua.setMetatable(-2);
 
-    lua.newMetatable(name) catch |err| switch (err) {
-        error.LuaError => return error.OutOfMemory,
-    };
+    try lua.newMetatable(name);
     lua.pushValue(-2);
     lua.setField(-2, "__index");
     lua.pop(1);
@@ -618,6 +792,41 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
 }
 
 pub fn setupLua(self: *Config) ConfigError!void {
+    // also https://github.com/riverwm/river/blob/46f77f30dcce06b7af0ec8dff5ae3e4fbc73176f/river/process.zig
+    const sig_ign = std.posix.Sigaction{
+        .handler = .{ .handler = std.posix.SIG.IGN },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.PIPE, &sig_ign, null);
+
+    // Most unix systems have a default limit of 1024 file descriptors and it
+    // seems unlikely for this default to be universally raised due to the
+    // broken behavior of select() on fds with value >1024. However, it is
+    // unreasonable to use such a low limit for a process such as river which
+    // uses many fds in its communication with wayland clients and the kernel.
+    //
+    // There is however an advantage to having a relatively low limit: it helps
+    // to catch any fd leaks. Therefore, don't use some crazy high limit that
+    // can never be reached before the system runs out of memory. This can be
+    // raised further if anyone reaches it in practice.
+    if (std.posix.getrlimit(.NOFILE)) |original| {
+        original_rlimit = original;
+        const new: std.posix.rlimit = .{
+            .cur = @min(4096, original.max),
+            .max = original.max,
+        };
+        if (std.posix.setrlimit(.NOFILE, new)) {
+            std.log.info("raised file descriptor limit of the river process to {d}", .{new.cur});
+        } else |_| {
+            std.log.err("setrlimit failed, using system default file descriptor limit of {d}", .{
+                original.cur,
+            });
+        }
+    } else |_| {
+        std.log.err("getrlimit failed, using system default file descriptor limit ", .{});
+    }
+
     const home_dir = std.posix.getenv("HOME") orelse "./";
     const libs_dir = std.posix.getenv("CONPOSITOR_LIB_DIR") orelse "/usr/lib";
 
@@ -644,28 +853,19 @@ pub fn setupLua(self: *Config) ConfigError!void {
 
     lua.openLibs();
 
-    _ = lua.getGlobal("package") catch return error.OutOfMemory;
+    _ = try lua.getGlobal("package");
 
-    _ = try lua.pushAny(path);
+    _ = lua.pushString(path);
     lua.setField(-2, "path");
     lua.pop(1);
 
-    try globalType(lua, Config, "Session");
+    try globalType(self.lua, Config, "Session");
     try globalType(self.lua, LuaContainer, "Container");
     try globalType(self.lua, LuaClient, "Client");
     try globalType(self.lua, LuaMonitor, "Monitor");
     try globalType(self.lua, LuaStack, "Stack");
     try globalType(self.lua, LuaTag, "Tag");
     try globalType(self.lua, LuaFilter, "Filter");
-
-    lua.newMetatable("Binds") catch return error.OutOfMemory;
-    lua.pop(1);
-
-    lua.newMetatable("Rules") catch return error.OutOfMemory;
-    lua.pop(1);
-
-    lua.newMetatable("Events") catch return error.OutOfMemory;
-    lua.pop(1);
 
     try lua.pushAny(self);
     lua.setMetatableRegistry("Session");
@@ -680,11 +880,8 @@ pub fn applyRules(self: *Config, client: *Client) !void {
 
     for (self.rules.items) |rule| {
         if (rule.filter.matches(title, appid)) {
-            _ = lua.getMetatableRegistry("Rules");
-            defer lua.pop(1);
-            _ = lua.rawGetIndex(-1, rule.calls);
-
-            _ = try lua.pushAny(LuaClient{ .child = client });
+            try lua.pushAny(rule.calls);
+            try lua.pushAny(LuaClient{ .child = client });
             lua.protectedCall(.{ .args = 1, .results = 0 }) catch |err| {
                 std.log.err("{s} Error: {s}", .{ @errorName(err), self.lua.toString(-1) catch "unknown" });
                 self.lua.pop(1);
@@ -693,14 +890,33 @@ pub fn applyRules(self: *Config, client: *Client) !void {
     }
 }
 
+pub fn mouseBind(self: *Config, bind: MouseBindData, pos: LuaVec, client: ?*Client) !bool {
+    const lua = self.lua;
+
+    const clientArg: ?LuaClient = if (client) |child| .{ .child = child } else null;
+
+    if (self.mouse_binds.get(bind)) |bind_call| {
+        try lua.pushAny(bind_call);
+        try lua.pushAny(clientArg);
+        try lua.pushAny(pos);
+        lua.protectedCall(.{ .args = 2, .results = 0 }) catch |err| {
+            std.log.err("{s} Error: {s}", .{ @errorName(err), self.lua.toString(-1) catch "unknown" });
+            self.lua.pop(1);
+
+            return false;
+        };
+
+        return true;
+    }
+
+    return false;
+}
+
 pub fn keyBind(self: *Config, bind: BindData) !bool {
     const lua = self.lua;
 
-    if (self.binds.get(bind)) |bind_idx| {
-        _ = lua.getMetatableRegistry("Binds");
-        defer lua.pop(1);
-
-        _ = lua.rawGetIndex(-1, bind_idx);
+    if (self.binds.get(bind)) |bind_call| {
+        try lua.pushAny(bind_call);
         lua.protectedCall(.{ .args = 0, .results = 0 }) catch |err| {
             std.log.err("{s} Error: {s}", .{ @errorName(err), self.lua.toString(-1) catch "unknown" });
             self.lua.pop(1);
@@ -729,7 +945,7 @@ pub fn getLayouts(self: *Config) []Layout {
     return self.layouts.items;
 }
 
-pub fn getTags(self: *Config) [][*:0]const u8 {
+pub fn getTags(self: *Config) [][:0]const u8 {
     return self.tags.items;
 }
 
@@ -788,24 +1004,23 @@ pub fn run(self: *Config, command: []const u8) !?[:0]const u8 {
     return null;
 }
 
-pub fn sendEvent(self: *Config, comptime T: type, event_id: Event, data: T) !void {
+pub fn sendEvent(self: *Config, comptime T: type, event_id: Event, data: T) ConfigError!bool {
     const lua = self.lua;
 
-    _ = lua.getMetatableRegistry("Events");
-    defer lua.pop(1);
-
+    var result = false;
     for (self.events.items) |event| {
         if (event.event != event_id)
             continue;
 
-        _ = lua.rawGetIndex(-1, event.calls);
-
+        _ = try lua.pushAny(event.calls);
         _ = try lua.pushAny(data);
-        lua.protectedCall(.{ .args = 1, .results = 0 }) catch |err| {
-            std.log.err("{s} Error: {s}", .{ @errorName(err), self.lua.toString(-1) catch "unknown" });
-            self.lua.pop(1);
-        };
+        try lua.protectedCall(.{ .args = 1, .results = 1 });
+
+        result = result or lua.toBoolean(-1);
+        self.lua.pop(1);
     }
+
+    return result;
 }
 
 pub fn deinit(self: *Config) void {
@@ -815,9 +1030,13 @@ pub fn deinit(self: *Config) void {
     for (self.rules.items) |rule|
         rule.filter.deinit();
 
+    for (self.tags.items) |tag|
+        allocator.free(tag);
+
     self.layouts.deinit();
     self.tags.deinit();
     self.binds.deinit();
+    self.mouse_binds.deinit();
     self.rules.deinit();
     self.events.deinit();
 

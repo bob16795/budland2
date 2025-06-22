@@ -50,12 +50,9 @@ const Listeners = struct {
     }
 };
 
-pub fn create(session: *Session, output_in: *wlr.Output) !void {
-    var output = output_in;
-
-    if (!output.initRender(session.wlr_allocator, session.renderer)) {
+pub fn create(session: *Session, output: *wlr.Output) !void {
+    if (!output.initRender(session.wlr_allocator, session.renderer))
         return error.DisplayRenderInitFailed;
-    }
 
     const fullscreen_bg = try session.layers.get(.LyrFS).createSceneRect(0, 0, session.config.getColor(false, .background));
     fullscreen_bg.node.setEnabled(false);
@@ -103,6 +100,8 @@ pub fn create(session: *Session, output_in: *wlr.Output) !void {
     const result: *Monitor = try allocator.create(Monitor);
     output.data = @intFromPtr(result);
 
+    session.monitors.append(result);
+
     result.* = .{
         .session = session,
         .output = output,
@@ -119,30 +118,30 @@ pub fn create(session: *Session, output_in: *wlr.Output) !void {
     output.events.frame.add(&result.frame_event);
     output.events.destroy.add(&result.deinit_event);
 
-    session.monitors.append(result);
+    const layout_output = try session.output_layout.add(result.output, result.mode.x, result.mode.y);
 
-    _ = try session.output_layout.add(result.output, result.mode.x, result.mode.y);
-    result.scene_output.setPosition(result.mode.x, result.mode.y);
+    result.scene_output.setPosition(layout_output.x, layout_output.y);
 
     try session.updateMons();
-    try session.config.sendEvent(Config.LuaMonitor, .add_monitor, .{ .child = result });
+
+    _ = try session.config.sendEvent(Config.LuaMonitor, .add_monitor, .{ .child = result });
 }
 
 pub fn frame(self: *Monitor) !void {
     // TODO:Figure out why this skips
-    commit: {
-        var iter = self.session.clients.iterator(.forward);
-        while (iter.next()) |client| {
-            if (client.resize_serial != 0 and
-                client.managed and
-                client.surface == .XDG and
-                self.clientVisible(client) and
-                !client.isStopped())
-                break :commit;
-        }
-
-        _ = self.scene_output.commit(null);
-    }
+    // commit: {
+    //     var iter = self.session.clients.iterator(.forward);
+    //     while (iter.next()) |client| {
+    //         if (client.pending_resize and
+    //             !client.floating and
+    //             client.managed and
+    //             client.surface == .XDG and
+    //             self.clientVisible(client) and
+    //             !client.isStopped())
+    //             break :commit;
+    //     }
+    _ = self.scene_output.commit(null);
+    // }
 
     var now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
         @panic("CLOCK_MONOTONIC not supported");
@@ -150,20 +149,33 @@ pub fn frame(self: *Monitor) !void {
 }
 
 pub fn close(self: *Monitor) !void {
-    if (self.session.monitors.empty()) {
-        self.session.selmon = null;
-    } else {
-        self.session.selmon = null;
+    var miter = self.session.monitors.iterator(.forward);
+    while (miter.next()) |monitor| {
+        if (!monitor.output.enabled or monitor == self)
+            continue;
 
-        var iter = self.session.monitors.iterator(.forward);
-        while (iter.next()) |monitor|
-            if (self.session.selmon != self) {
-                self.session.selmon = monitor;
-                if (monitor.output.enabled) break;
-            };
+        try self.session.focusMonitor(monitor);
+        break;
     }
+    const new_mon = self.session.focusedMonitor orelse return;
 
-    std.log.info("TODO: Monitor.close clients move", .{});
+    var citer = self.session.clients.iterator(.forward);
+    while (citer.next()) |client| {
+        if (client.floating and client.monitor == self)
+            try client.resize(.{
+                .x = client.bounds.x - self.mode.x + new_mon.mode.x,
+                .y = client.bounds.y - self.mode.y + new_mon.mode.y,
+                .width = client.bounds.width,
+                .height = client.bounds.height,
+            });
+
+        if (client.monitor == self)
+            try client.setMonitor(new_mon);
+    }
+    if (new_mon.focusedClient()) |focus|
+        try self.session.focusClient(focus, true)
+    else
+        self.session.focusClear();
 }
 
 pub fn arrangeLayers(self: *Monitor) !void {
@@ -174,7 +186,7 @@ pub fn arrangeLayers(self: *Monitor) !void {
     for (0..4) |i|
         self.arrangeLayer(3 - i, &usable, true);
 
-    if (!std.mem.eql(u8, std.mem.asBytes(&usable), std.mem.asBytes(&self.window))) {
+    if (!std.meta.eql(usable, self.window)) {
         self.window = usable;
         try self.arrangeClients();
     }
@@ -269,7 +281,7 @@ pub fn arrangeClients(self: *Monitor) !void {
 
     // TODO: update fullscreen state
 
-    try self.session.input.motionNotify(0, null, 0, 0, 0, 0);
+    try self.session.input.motionNotify(0);
 }
 
 fn arrangeLayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) void {
@@ -326,8 +338,6 @@ pub fn deinit(self: *Monitor) void {
     self.deinit_event.link.remove();
 
     self.link.remove();
-    if (self.session.selmon == self)
-        self.session.selmon = null;
 
     allocator.destroy(self);
 }

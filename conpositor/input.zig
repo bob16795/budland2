@@ -19,8 +19,7 @@ const REPEAT_DELAY = 300;
 const CursorMode = enum {
     normal,
     pressed,
-    move,
-    resize,
+    lua,
 };
 
 const InputEvents = struct {
@@ -253,7 +252,7 @@ cursor: *wlr.Cursor,
 cursor_mode: CursorMode,
 xcursor_image: ?[*:0]const u8 = null,
 
-relative_pointer_manager: *wlr.RelativePointerManagerV1,
+//relative_pointer_manager: *wlr.RelativePointerManagerV1,
 cursor_shape_manager: *wlr.CursorShapeManagerV1,
 xcursor_manager: *wlr.XcursorManager,
 seat: *wlr.Seat,
@@ -262,7 +261,7 @@ events: InputEvents,
 keyboards: wl.list.Head(Keyboard, .link) = undefined,
 locked: bool = false,
 
-grab_client: *Client = undefined,
+grab_client: ?*Client = null,
 grab_x: i32 = 0,
 grab_y: i32 = 0,
 
@@ -289,8 +288,6 @@ pub fn init(self: *Input, session: *Session) !void {
 
     std.log.warn("TODO: virtual keyboards", .{});
 
-    const relative_pointer_manager = try wlr.RelativePointerManagerV1.create(session.server);
-
     self.* = .{
         .session = session,
         .cursor = cursor,
@@ -298,7 +295,6 @@ pub fn init(self: *Input, session: *Session) !void {
         .xcursor_manager = xcursor_manager,
         .seat = seat,
         .events = self.events,
-        .relative_pointer_manager = relative_pointer_manager,
         .cursor_shape_manager = cursor_shape_manager,
     };
 
@@ -322,35 +318,24 @@ pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
 }
 
 pub fn cursor_motion(self: *Input, motion: *wlr.Pointer.event.Motion) !void {
-    try self.motionNotify(motion.time_msec, motion.device, motion.delta_x, motion.delta_y, motion.unaccel_dx, motion.unaccel_dy);
+    self.cursor.move(motion.device, motion.delta_x, motion.delta_y);
+    try self.motionNotify(motion.time_msec);
 }
 
 pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbsolute) !void {
-    var layout_x: f64 = 0;
-    var layout_y: f64 = 0;
-    self.cursor.absoluteToLayoutCoords(motion.device, motion.x, motion.y, &layout_x, &layout_y);
-    const dx = layout_x - self.cursor.x;
-    const dy = layout_y - self.cursor.y;
+    self.cursor.warpAbsolute(motion.device, motion.x, motion.y);
 
-    try self.motionNotify(@intCast(motion.time_msec), motion.device, dx, dy, dx, dy);
+    try self.motionNotify(@intCast(motion.time_msec));
 }
 
 const MotionError = error{
     TODO,
-} || cairo.Error;
+} || Config.ConfigError || cairo.Error;
 
 pub fn motionNotify(
     self: *Input,
     time: usize,
-    device: ?*wlr.InputDevice,
-    dx_accel: f64,
-    dy_accel: f64,
-    dx_unaccel: f64,
-    dy_unaccel: f64,
 ) MotionError!void {
-    const dx = dx_accel;
-    const dy = dy_accel;
-
     const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
 
     if (self.cursor_mode == .pressed and self.seat.drag == null) {
@@ -358,15 +343,14 @@ pub fn motionNotify(
     }
 
     if (time > 0) {
-        self.relative_pointer_manager.sendRelativeMotion(self.seat, time * 1000, dx, dy, dx_unaccel, dy_unaccel);
+        //self.relative_pointer_manager.sendRelativeMotion(self.seat, time * 1000, dx, dy, dx_unaccel, dy_unaccel);
 
         // TODO: constraints
 
-        self.cursor.move(device, dx, dy);
-
         self.session.idle_notifier.notifyActivity(self.seat);
 
-        self.session.selmon = objects.monitor;
+        if (objects.monitor) |monitor|
+            try self.session.focusMonitor(monitor);
     }
 
     if (self.seat.drag) |drag| {
@@ -383,27 +367,13 @@ pub fn motionNotify(
         }
     }
 
-    if (self.cursor_mode == .move) {
-        // TODO: not fullscreen
-        try self.grab_client.resize(.{
-            .x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_x,
-            .y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_y,
-            .width = self.grab_client.bounds.width,
-            .height = self.grab_client.bounds.height,
-        });
+    const data: Config.LuaVec = .{
+        .x = self.cursor.x,
+        .y = self.cursor.y,
+    };
 
+    if (try self.session.config.sendEvent(Config.LuaVec, .mouse_move, data))
         return;
-    } else if (self.cursor_mode == .resize) {
-        // TODO: not fullscreen
-        try self.grab_client.resize(.{
-            .x = self.grab_client.bounds.x,
-            .y = self.grab_client.bounds.y,
-            .width = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x,
-            .height = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y,
-        });
-
-        return;
-    }
 
     if (objects.surface == null and
         self.seat.drag == null and
@@ -450,75 +420,41 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
             if (objects.client) |target| {
                 if (target.managed)
                     try self.session.focusClient(target, true);
+
+                const keyboard = self.seat.getKeyboard();
+                const mods = if (keyboard) |keyb| keyb.getModifiers() else wlr.Keyboard.ModifierMask{};
+                if (try self.session.config.mouseBind(.{ .mods = mods, .button = button.button }, .{ .x = self.cursor.x, .y = self.cursor.y }, objects.client)) {
+                    self.cursor_mode = .lua;
+                    self.grab_client = target;
+                    return;
+                }
             }
-
-            const keyboard = self.seat.getKeyboard();
-            const mods = if (keyboard) |keyb| keyb.getModifiers() else wlr.Keyboard.ModifierMask{};
-
-            _ = mods;
-
-            // TODO:
-            // for (self.session.config.mouse_binds.items) |b| {
-            //     if (b.button == button.button and cleanMask(b.mod) == cleanMask(mods)) {
-            //         if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
-            //             break :handle_press;
-
-            //         switch (b.action) {
-            //             .move => {
-            //                 self.grab_client = objects.client orelse
-            //                     break :handle_press;
-
-            //                 try self.grab_client.setFloating(true);
-            //                 self.cursor_mode = .move;
-            //                 self.grab_x = @as(i32, @intFromFloat(self.cursor.x)) - self.grab_client.bounds.x;
-            //                 self.grab_y = @as(i32, @intFromFloat(self.cursor.y)) - self.grab_client.bounds.y;
-
-            //                 self.cursor.setXcursor(self.xcursor_manager, "fleur");
-            //             },
-            //             .resize => {
-            //                 self.grab_client = objects.client orelse
-            //                     break :handle_press;
-
-            //                 try self.grab_client.setFloating(true);
-            //                 self.cursor_mode = .resize;
-
-            //                 _ = self.cursor.warp(
-            //                     null,
-            //                     @floatFromInt(self.grab_client.bounds.x + self.grab_client.bounds.width),
-            //                     @floatFromInt(self.grab_client.bounds.y + self.grab_client.bounds.height),
-            //                 );
-
-            //                 self.cursor.setXcursor(self.xcursor_manager, "se-resize");
-            //             },
-            //         }
-
-            //         return;
-            //     }
-            // }
         },
         .released => {
-            if (!self.locked and self.cursor_mode != .normal and self.cursor_mode != .pressed) {
-                self.cursor_mode = .normal;
-
-                if (self.xcursor_image) |xcursor_image|
-                    self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
-
-                self.seat.pointerClearFocus();
-                try self.motionNotify(0, null, 0, 0, 0, 0);
-
-                const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
-
-                if (objects.monitor) |monitor| {
-                    self.session.selmon = monitor;
-
-                    try self.grab_client.setMonitor(monitor);
-                }
-            } else self.cursor_mode = .normal;
+            if (try self.endDrag()) return;
         },
         else => {},
     }
 
     _ = self.seat.pointerNotifyButton(button.time_msec, button.button, button.state);
+}
+
+pub fn endDrag(self: *Input) !bool {
+    if (self.cursor_mode == .lua and try self.session.config.sendEvent(i32, .mouse_release, 0)) {
+        self.cursor_mode = .normal;
+
+        if (self.xcursor_image) |xcursor_image|
+            self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
+
+        self.seat.pointerClearFocus();
+        try self.motionNotify(0);
+
+        self.grab_client = null;
+
+        return true;
+    } else self.cursor_mode = .normal;
+
+    return false;
 }
 
 pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {

@@ -10,6 +10,8 @@ const Config = @import("config.zig");
 
 const Client = @This();
 
+const ClientError = cairo.Error || error{TODO};
+
 const allocator = Config.allocator;
 
 const SurfaceKind = enum { XDG, X11 };
@@ -219,14 +221,15 @@ scene_surface: *wlr.SceneTree = undefined,
 bounds: wlr.Box = std.mem.zeroes(wlr.Box),
 inner_bounds: wlr.Box = std.mem.zeroes(wlr.Box),
 prev_bounds: wlr.Box = std.mem.zeroes(wlr.Box),
-label: ?[*:0]const u8 = null,
-icon: ?[*:0]const u8 = null,
+label: ?[:0]const u8 = null,
+icon: ?[:0]const u8 = null,
 monitor: ?*Monitor = null,
 managed: bool,
 fullscreen: bool = false,
 frame: ClientFrame = .{},
 hide_frame: bool = false,
 
+pending_resize: bool = false,
 resize_serial: u32 = 0,
 
 link: wl.list.Link = undefined,
@@ -308,11 +311,10 @@ pub fn updateFrame(self: *Client) !void {
     if (self.frame.kind != .border and self.frame.kind != .title)
         return;
 
-    const border_color =
-        if (self.session.selmon) |selmon|
-            self.session.config.getColor(selmon.focusedClient() == self, .border)
-        else
-            self.session.config.getColor(false, .border);
+    const border_color = if (self.session.focusedMonitor) |selmon|
+        self.session.config.getColor(selmon.focusedClient() == self, .border)
+    else
+        self.session.config.getColor(false, .border);
 
     for (self.frame.sides) |side|
         side.setColor(border_color);
@@ -382,7 +384,7 @@ pub fn updateFrame(self: *Client) !void {
         const label_y_bearing: i32 = @intFromFloat(label_extents.y_bearing);
         const label_height: i32 = @intFromFloat(label_extents.height);
 
-        const icon = std.mem.span(tab_client.icon orelse "?");
+        const icon = tab_client.icon orelse "?";
         const icon_extents = context.textExtents(icon.ptr);
         const icon_width: i32 = @intFromFloat(icon_extents.width);
         const icon_height: i32 = @intFromFloat(icon_extents.height);
@@ -562,7 +564,8 @@ pub fn dissociate(self: *Client) !void {
 
 pub fn setHints(self: *Client) !void {
     // const surface = self.getSurface();
-    if (self == self.session.selmon.?.focusedClient())
+    const monitor = self.monitor orelse return;
+    if (self == monitor.focusedClient())
         return;
 
     // self.setUrgent()
@@ -586,8 +589,6 @@ pub fn map(self: *Client) !void {
 
     self.scene.node.setEnabled(true);
     self.scene_surface.node.setEnabled(true);
-
-    self.monitor = self.session.selmon orelse self.session.monitors.first() orelse return;
 
     var geom: wlr.Box = undefined;
     switch (self.surface) {
@@ -613,21 +614,19 @@ pub fn map(self: *Client) !void {
         },
     }
 
-    if (self.managed)
-        try self.applyRules();
-
     self.frame = try .init(if (self.managed)
         if (self.floating) .title else .border
     else
         .hide, self.session.config.getColor(false, .border), self);
 
-    if (self.managed)
-        geom = self.applyBounds(geom, true);
-
-    std.log.info("map client {*} surf {}", .{ self, self.surface });
-
     self.session.clients.append(self);
     self.session.focus_clients.append(self);
+
+    if (self.managed) {
+        geom = self.applyBounds(geom, true);
+    }
+
+    std.log.info("map client {*} surf {}", .{ self, self.surface });
 
     if (self.managed)
         try self.session.focusClient(self, true)
@@ -640,6 +639,13 @@ pub fn map(self: *Client) !void {
         try m.arrangeClients();
 
     try self.updateFrame();
+
+    try self.setMonitor(self.session.focusedMonitor orelse
+        self.session.monitors.first() orelse
+        return error.fdsa);
+
+    if (self.managed)
+        try self.applyRules();
 }
 
 pub fn applyRules(self: *Client) !void {
@@ -681,7 +687,7 @@ pub fn getTitle(self: *Client) []const u8 {
 
 pub fn getLabel(self: *Client) []const u8 {
     if (self.label) |label|
-        return std.mem.span(label);
+        return label;
 
     return self.getTitle();
 }
@@ -797,7 +803,7 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     return result;
 }
 
-pub fn resize(self: *Client, in_target_bounds: wlr.Box) !void {
+pub fn resize(self: *Client, in_target_bounds: wlr.Box) ClientError!void {
     self.inner_bounds = self.applyBounds(in_target_bounds, false);
 
     self.bounds = self.applyBounds(in_target_bounds, false);
@@ -826,6 +832,7 @@ pub fn resize(self: *Client, in_target_bounds: wlr.Box) !void {
     }
 
     self.resize_serial = self.updateSize();
+    self.pending_resize = true;
 
     try self.updateFrame();
 }
@@ -837,6 +844,9 @@ pub inline fn setContainer(self: *Client, container: u8) !void {
     self.container = container;
 
     std.log.info("set container: {}", .{self.container});
+
+    if (!self.floating and self.frame.is_init)
+        try self.session.focusClient(self, true);
 
     if (self.monitor) |m|
         try m.arrangeClients();
@@ -863,24 +873,24 @@ pub inline fn setBorder(self: *Client, border: i32) !void {
     try self.resize(self.bounds);
 }
 
-pub inline fn setIcon(self: *Client, icon: ?[*:0]const u8) !void {
+pub inline fn setIcon(self: *Client, icon: ?[:0]const u8) !void {
     if (self.icon) |old_icon|
-        allocator.free(std.mem.span(old_icon));
+        allocator.free(old_icon);
 
     if (icon) |new_icon|
-        self.icon = allocator.dupeZ(u8, std.mem.span(new_icon)) catch null
+        self.icon = allocator.dupeZ(u8, new_icon) catch null
     else
         self.icon = null;
 
     try self.updateFrame();
 }
 
-pub inline fn setLabel(self: *Client, label: ?[*:0]const u8) !void {
+pub inline fn setLabel(self: *Client, label: ?[:0]const u8) !void {
     if (self.label) |old_label|
-        allocator.free(std.mem.span(old_label));
+        allocator.free(old_label);
 
     if (label) |new_label|
-        self.label = allocator.dupeZ(u8, std.mem.span(new_label)) catch null
+        self.label = allocator.dupeZ(u8, new_label) catch null
     else
         self.label = null;
 
@@ -955,17 +965,26 @@ pub fn updateSize(self: *Client) u32 {
 }
 
 pub fn commit(self: *Client) !void {
-    if (self.getSurface().mapped)
-        try self.resize(self.bounds);
+    if (!self.getSurface().mapped)
+        return;
+
+    try self.resize(self.bounds);
 
     switch (self.surface) {
         .XDG => |surface| {
-            if (self.resize_serial != 0 and self.resize_serial <= surface.current.configure_serial)
-                self.resize_serial = 0;
+            if (self.pending_resize and self.resize_serial <= surface.current.configure_serial)
+                self.pending_resize = false;
         },
         .X11 => {
-            self.resize_serial = 0;
+            self.pending_resize = false;
         },
+    }
+
+    if (self.session.getObjectsAt(
+        @floatFromInt(self.bounds.x),
+        @floatFromInt(self.bounds.y),
+    ).monitor) |monitor| {
+        try self.setMonitor(monitor);
     }
 }
 
@@ -995,13 +1014,12 @@ pub fn activate(self: *Client) !void {
 }
 
 pub fn unmap(self: *Client) !void {
-    if (self == self.session.input.grab_client) {
-        self.session.input.cursor_mode = .normal;
-    }
+    if (self == self.session.input.grab_client)
+        _ = try self.session.input.endDrag();
 
     std.log.info("unmap {*}", .{self});
 
-    try self.setMonitor(null);
+    try self.clearMonitor();
 
     if (self.frame.is_init) {
         std.log.info("{}", .{self.frame.title_buffer.base.n_locks});
@@ -1017,11 +1035,9 @@ pub fn unmap(self: *Client) !void {
         if (self.getSurface() == self.session.exclusive_focus)
             self.session.exclusive_focus = null;
         if (self.getSurface() == self.session.input.seat.keyboard_state.focused_surface) unfocus: {
-            if (self.session.selmon) |selmon| {
-                if (selmon.focusedClient()) |top| {
-                    try self.session.focusClient(top, false);
-                    break :unfocus;
-                }
+            if (self.session.focusedClient()) |top| {
+                try self.session.focusClient(top, false);
+                break :unfocus;
             }
 
             self.session.focusClear();
@@ -1033,16 +1049,7 @@ pub fn unmap(self: *Client) !void {
 
     self.scene.node.destroy();
 
-    const objects = self.session.getObjectsAt(
-        self.session.input.cursor.x,
-        self.session.input.cursor.y,
-    );
-
-    if (objects.client) |client|
-        try self.session.focusClient(client, true);
-
-    if (self.session.selmon) |selmon|
-        selmon.sendFocus();
+    try self.session.input.motionNotify(0);
 
     try self.setIcon(null);
     try self.setLabel(null);
@@ -1118,7 +1125,7 @@ pub fn close(self: *Client) void {
     }
 }
 
-pub fn setMonitor(self: *Client, target_monitor: ?*Monitor) !void {
+pub fn setMonitor(self: *Client, target_monitor: *Monitor) !void {
     const old_monitor = self.monitor;
 
     if (old_monitor == target_monitor)
@@ -1128,20 +1135,50 @@ pub fn setMonitor(self: *Client, target_monitor: ?*Monitor) !void {
     self.prev_bounds = self.bounds;
 
     if (old_monitor) |old| {
+        self.getSurface().sendLeave(old.output);
+
         try old.arrangeClients();
 
-        self.getSurface().sendLeave(old.output);
+        try self.resize(.{
+            .x = self.bounds.x - old.mode.x + target_monitor.mode.x,
+            .y = self.bounds.y - old.mode.y + target_monitor.mode.y,
+            .width = self.bounds.width,
+            .height = self.bounds.height,
+        });
+    } else {
+        try self.resize(.{
+            .x = self.bounds.x + target_monitor.mode.x,
+            .y = self.bounds.y + target_monitor.mode.y,
+            .width = self.bounds.width,
+            .height = self.bounds.height,
+        });
     }
 
-    if (target_monitor) |new| {
-        self.getSurface().sendEnter(new.output);
-        try self.setTag(new.tag);
+    self.getSurface().sendEnter(target_monitor.output);
 
-        try self.resize(self.bounds);
+    try self.setTag(target_monitor.tag);
 
-        try self.setFullscreen(self.fullscreen);
+    try self.setFullscreen(self.fullscreen);
 
-        try new.arrangeClients();
+    try target_monitor.arrangeClients();
+
+    try self.session.focusClient(self, true);
+    try self.updateFrame();
+}
+
+pub fn clearMonitor(self: *Client) !void {
+    const old_monitor = self.monitor;
+
+    if (old_monitor == null)
+        return;
+
+    self.monitor = null;
+    self.prev_bounds = self.bounds;
+
+    if (old_monitor) |old| {
+        self.getSurface().sendLeave(old.output);
+
+        try old.arrangeClients();
     }
 
     try self.session.focusClient(self, true);
