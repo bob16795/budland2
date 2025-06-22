@@ -101,7 +101,7 @@ end
 
 function M.quit()
     return function()
-        session:quit(program, args)
+        session:quit()
     end
 end
 
