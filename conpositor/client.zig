@@ -25,6 +25,7 @@ const ClientFrame = struct {
 
     shadow: [2]*wlr.SceneRect = undefined,
     shadow_tree: *wlr.SceneTree = undefined,
+    border_tree: *wlr.SceneTree = undefined,
     sides: [4]*wlr.SceneRect = undefined,
     buffer_scene: *wlr.SceneBuffer = undefined,
 
@@ -32,10 +33,14 @@ const ClientFrame = struct {
         const shadow_scene = client.session.layers.get(.LyrFloatShadows);
 
         var shadow_tree = try shadow_scene.createSceneTree();
+        shadow_tree.node.data = @intFromPtr(client);
+
+        var border_tree = try client.scene.createSceneTree();
+        border_tree.node.data = @intFromPtr(client);
 
         var sides: [4]*wlr.SceneRect = undefined;
         for (&sides) |*side| {
-            side.* = try client.scene.createSceneRect(0, 0, color);
+            side.* = try border_tree.createSceneRect(0, 0, color);
             side.*.node.data = @intFromPtr(client);
         }
 
@@ -45,8 +50,10 @@ const ClientFrame = struct {
             side.*.node.data = @intFromPtr(client);
         }
 
-        const title_buffer = try CairoBuffer.create(allocator, 10, 10, 1.0);
+        const title_buffer = try CairoBuffer.create(allocator, 0, 0, 1.0);
         const locked = title_buffer.base.lock();
+
+        shadow_tree.node.setEnabled(false);
 
         return .{
             .is_init = true,
@@ -56,6 +63,7 @@ const ClientFrame = struct {
             .title_buffer = title_buffer,
             .buffer_scene = try client.scene.createSceneBuffer(locked),
             .shadow_tree = shadow_tree,
+            .border_tree = border_tree,
         };
     }
 };
@@ -191,18 +199,14 @@ const ClientEvents = struct {
         const events: *ClientEvents = @fieldParentPtr("set_title_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
-        client.updateFrame() catch |ex| {
-            @panic(@errorName(ex));
-        };
+        client.dirty.title = true;
     }
 
     pub fn fullscreen(listener: *wl.Listener(void)) void {
         const events: *ClientEvents = @fieldParentPtr("fullscreen_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
-        client.setFullscreen(true) catch |ex| {
-            @panic(@errorName(ex));
-        };
+        client.setFullscreen(true);
     }
 };
 
@@ -211,25 +215,37 @@ client_id: u8 = 10,
 session: *Session,
 surface: ClientSurface,
 events: ClientEvents = .{},
+active: bool = false,
 
 scene: *wlr.SceneTree = undefined,
 scene_surface: *wlr.SceneTree = undefined,
+popup_surface: *wlr.SceneTree = undefined,
 
-bounds: wlr.Box = std.mem.zeroes(wlr.Box),
-inner_bounds: wlr.Box = std.mem.zeroes(wlr.Box),
-prev_bounds: wlr.Box = std.mem.zeroes(wlr.Box),
+container_bounds: wlr.Box = std.mem.zeroes(wlr.Box),
+floating_bounds: wlr.Box = std.mem.zeroes(wlr.Box),
 label: ?[:0]const u8 = null,
 icon: ?[:0]const u8 = null,
 monitor: ?*Monitor = null,
 managed: bool,
 fullscreen: bool = false,
 frame: ClientFrame = .{},
+visible: bool = true,
 hide_frame: bool = false,
 
-resize_serial: u32 = 0,
+resize_serial: ?u32 = null,
 
 link: wl.list.Link = undefined,
 focus_link: wl.list.Link = undefined,
+
+dirty: packed struct {
+    size: bool = true,
+    floating: bool = true,
+    frame: bool = true,
+    title: bool = true,
+    visible: bool = true,
+    container: bool = true,
+    top: bool = true,
+} = .{},
 
 // properties
 container: u8 = 0,
@@ -240,116 +256,171 @@ border: i32 = 0,
 // TODO: move this to config
 const SHADOW_SIZE = 10;
 
+pub fn getBounds(self: *Client) wlr.Box {
+    if (self.floating)
+        return self.floating_bounds
+    else
+        return self.container_bounds;
+}
+
+pub fn getInnerBounds(self: *Client) wlr.Box {
+    const title_height = self.session.config.getTitleHeight();
+    const bounds = self.getBounds();
+
+    return switch (self.frame.kind) {
+        .hide => .{
+            .x = 0,
+            .y = 0,
+            .width = bounds.width,
+            .height = bounds.height,
+        },
+        .border => .{
+            .x = self.border,
+            .y = self.border,
+            .width = bounds.width - self.border - self.border,
+            .height = bounds.height - self.border - self.border,
+        },
+        .title => .{
+            .x = self.border,
+            .y = self.border + title_height + self.border,
+            .width = bounds.width - self.border - self.border,
+            .height = bounds.height - self.border - title_height - self.border - self.border,
+        },
+    };
+}
+
 fn sharesTabs(self: *const Client, other: *Client) bool {
     return self == other or
         (self.container == other.container and
-        !self.floating and
-        !other.floating and
-        self.tag == other.tag and
-        self.monitor == other.monitor);
+            !self.floating and
+            !other.floating and
+            self.tag == other.tag and
+            self.monitor == other.monitor);
 }
 
-pub fn updateFrame(self: *Client) !void {
+fn updateSize(self: *Client) !void {
     if (!self.frame.is_init)
         return;
+
+    std.log.info("update size", .{});
+    defer self.dirty.size = false;
+
+    self.resize_serial = self.updateSizeSerial();
 
     if (self.isStopped())
         return;
 
+    const inner_bounds = self.getInnerBounds();
+    const bounds = self.getBounds();
+
     const clip: wlr.Box = .{
         .x = 0,
         .y = 0,
-        .width = self.inner_bounds.width,
-        .height = self.inner_bounds.height,
+        .width = inner_bounds.width,
+        .height = inner_bounds.height,
     };
 
     self.scene_surface.node.subsurfaceTreeSetClip(&clip);
 
-    if (self.hide_frame) {
-        for (self.frame.sides) |side|
-            side.node.setEnabled(false);
-        for (self.frame.shadow) |shadow|
-            shadow.node.setEnabled(false);
-        self.frame.buffer_scene.node.setEnabled(false);
-    } else {
-        for (self.frame.shadow) |shadow|
-            shadow.node.setEnabled(true);
-        for (self.frame.sides) |side|
-            side.node.setEnabled(self.frame.kind == .title or self.frame.kind == .border);
-        self.frame.sides[0].node.setEnabled(self.frame.kind == .border);
-        self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
-    }
-
     if (self.managed) {
-        const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
-        self.frame.shadow_tree.node.reparent(self.session.layers.get(shadow_layer));
+        self.scene.node.setPosition(bounds.x, bounds.y);
+        self.scene_surface.node.setPosition(inner_bounds.x, inner_bounds.y);
+        self.popup_surface.node.setPosition(inner_bounds.x, inner_bounds.y);
 
-        self.scene.node.setPosition(self.bounds.x, self.bounds.y);
-        self.scene_surface.node.setPosition(self.inner_bounds.x, self.inner_bounds.y);
+        self.frame.shadow_tree.node.setPosition(bounds.x + bounds.width, bounds.y + bounds.height);
+        self.frame.shadow[0].node.setPosition(0, -bounds.height + SHADOW_SIZE);
+        self.frame.shadow[1].node.setPosition(-bounds.width + SHADOW_SIZE, 0);
 
-        self.frame.shadow_tree.node.setPosition(self.bounds.x + self.bounds.width, self.bounds.y + self.bounds.height);
-        self.frame.shadow[0].node.setPosition(0, -self.bounds.height + SHADOW_SIZE);
-        self.frame.shadow[1].node.setPosition(-self.bounds.width + SHADOW_SIZE, 0);
-
-        self.frame.shadow[0].setSize(SHADOW_SIZE, self.bounds.height);
-        self.frame.shadow[1].setSize(self.bounds.width - SHADOW_SIZE, SHADOW_SIZE);
+        self.frame.shadow[0].setSize(SHADOW_SIZE, bounds.height);
+        self.frame.shadow[1].setSize(bounds.width - SHADOW_SIZE, SHADOW_SIZE);
     } else {
-        self.bounds.x = self.surface.X11.x;
-        self.bounds.y = self.surface.X11.y;
+        self.floating_bounds.x = self.surface.X11.x;
+        self.floating_bounds.y = self.surface.X11.y;
 
         self.scene.node.reparent(self.session.layers.get(.LyrFloat));
-        self.scene.node.setPosition(self.bounds.x, self.bounds.y);
+        self.scene.node.setPosition(self.floating_bounds.x, self.floating_bounds.y);
     }
 
-    if (self.frame.kind != .border and self.frame.kind != .title)
+    self.frame.sides[0].setSize(bounds.width, inner_bounds.y);
+    self.frame.sides[1].setSize(bounds.width, bounds.height - inner_bounds.height - inner_bounds.y);
+    self.frame.sides[2].setSize(inner_bounds.x, bounds.height);
+    self.frame.sides[3].setSize(bounds.width - inner_bounds.width - inner_bounds.x, bounds.height);
+
+    self.frame.sides[0].node.setPosition(0, 0);
+    self.frame.sides[1].node.setPosition(0, inner_bounds.height + inner_bounds.y);
+    self.frame.sides[2].node.setPosition(0, 0);
+    self.frame.sides[3].node.setPosition(inner_bounds.width + inner_bounds.x, 0);
+
+    if (self.frame.kind == .title) {
+        const title_height = self.session.config.getTitleHeight();
+        const total_width: i32 = bounds.width;
+        const total_height: i32 = title_height + self.border * 2;
+
+        self.frame.buffer_scene.setDestSize(total_width, total_height);
+
+        self.frame.title_buffer = try self.frame.title_buffer.resize(
+            @intCast(total_width),
+            @intCast(total_height),
+            if (self.monitor) |monitor| monitor.output.scale else self.frame.title_buffer.scale,
+        );
+
+        try self.updateTitles();
+    }
+
+    try self.session.input.motionNotify(0);
+}
+
+fn updateFrame(self: *Client) !void {
+    if (!self.frame.is_init)
         return;
 
-    const border_color = if (self.session.focusedMonitor) |selmon|
-        self.session.config.getColor(selmon.focusedClient() == self, .border)
-    else
-        self.session.config.getColor(false, .border);
+    std.log.info("update frame", .{});
+    defer self.dirty.frame = false;
+
+    for (self.frame.shadow) |shadow|
+        shadow.node.setEnabled(!self.hide_frame);
+    self.frame.border_tree.node.setEnabled(self.frame.kind == .title or self.frame.kind == .border);
+    self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
+
+    const border_color = self.session.config.getColor(self.active, .border);
 
     for (self.frame.sides) |side|
         side.setColor(border_color);
+}
 
-    self.frame.sides[0].setSize(self.bounds.width, self.inner_bounds.y);
-    self.frame.sides[1].setSize(self.bounds.width, self.bounds.height - self.inner_bounds.height - self.inner_bounds.y);
-    self.frame.sides[2].setSize(self.inner_bounds.x, self.bounds.height);
-    self.frame.sides[3].setSize(self.bounds.width - self.inner_bounds.width - self.inner_bounds.x, self.bounds.height);
-
-    self.frame.sides[0].node.setPosition(0, 0);
-    self.frame.sides[1].node.setPosition(0, self.inner_bounds.height + self.inner_bounds.y);
-    self.frame.sides[2].node.setPosition(0, 0);
-    self.frame.sides[3].node.setPosition(self.inner_bounds.width + self.inner_bounds.x, 0);
+fn updateTabs(self: *Client) !void {
+    if (self.dirty.frame)
+        try self.updateFrame();
 
     if (self.frame.kind != .title)
         return;
 
-    if (self.bounds.width == 0 and self.bounds.height == 0)
+    const bounds = self.getBounds();
+
+    if (bounds.width == 0 or bounds.height == 0)
         return;
 
-    var totalTabs: i32 = 0;
-
+    var tab_count: i32 = 0;
+    var border_focus = false;
     {
         var iter = self.session.clients.iterator(.forward);
-        while (iter.next()) |tabClient| {
-            if (self.sharesTabs(tabClient))
-                totalTabs += 1;
+        while (iter.next()) |tab_client| {
+            if (!self.sharesTabs(tab_client))
+                continue;
+
+            tab_count += 1;
+
+            if (tab_client.active)
+                border_focus = true;
         }
     }
 
     const title_height = self.session.config.getTitleHeight();
 
-    const total_width: i32 = self.bounds.width;
-    const total_height: i32 = title_height + self.border * 2;
-    const ftab_width: f64 = @as(f64, @floatFromInt(total_width)) / @as(f64, @floatFromInt(totalTabs));
+    const total_width: i32 = bounds.width;
+    const total_height: i32 = title_height + self.border;
+    const ftab_width: f64 = @as(f64, @floatFromInt(total_width)) / @as(f64, @floatFromInt(tab_count));
     const title_pad = self.session.config.getTitlePad();
-
-    self.frame.title_buffer = try self.frame.title_buffer.resize(
-        @intCast(total_width),
-        @intCast(total_height),
-        if (self.monitor) |monitor| monitor.output.scale else self.frame.title_buffer.scale,
-    );
 
     var context = try self.frame.title_buffer.beginContext();
     defer self.frame.title_buffer.endContext(&context);
@@ -385,6 +456,7 @@ pub fn updateFrame(self: *Client) !void {
 
         const fg = self.session.config.getColor(tab_focus, .foreground);
         const bg = self.session.config.getColor(tab_focus, .background);
+        const border_color = self.session.config.getColor(tab_focus, .border);
 
         var fade_pattern = try cairo.Pattern.createLinear(
             @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad - 30),
@@ -411,7 +483,7 @@ pub fn updateFrame(self: *Client) !void {
             @floatFromInt(self.border + tab_start),
             @floatFromInt(self.border),
             @floatFromInt(tab_width - self.border - self.border),
-            @floatFromInt(total_height - self.border - self.border),
+            @floatFromInt(total_height - self.border),
         );
         context.fill();
 
@@ -443,13 +515,77 @@ pub fn updateFrame(self: *Client) !void {
         .height = @floatFromInt(self.frame.title_buffer.base.height),
     });
 
-    self.frame.buffer_scene.setDestSize(total_width, total_height);
     self.frame.buffer_scene.node.setEnabled(true);
 }
 
-pub fn setVisible(self: *Client, visible: bool) void {
-    self.scene.node.setEnabled(visible);
-    self.frame.shadow_tree.node.setEnabled(visible and self.managed);
+fn updateTitles(self: *Client) !void {
+    std.log.info("update title", .{});
+    defer self.dirty.title = false;
+
+    var iter = self.session.clients.iterator(.forward);
+    while (iter.next()) |client|
+        if (self.sharesTabs(client))
+            try client.updateTabs();
+}
+
+pub fn updateVisible(self: *Client) !void {
+    if (self.dirty.container) {
+        if (self.monitor) |m|
+            m.dirty.layout = true;
+        return;
+    }
+
+    std.log.info("update visible", .{});
+    defer self.dirty.visible = false;
+
+    self.scene.node.setEnabled(self.visible);
+    self.frame.shadow_tree.node.setEnabled(self.visible and self.managed);
+}
+
+pub fn updateFloating(self: *Client) !void {
+    std.log.info("update floating", .{});
+    defer self.dirty.floating = false;
+
+    const shadow_layer: Session.Layer = if (self.floating) .LyrFloatShadows else .LyrTileShadows;
+    self.frame.shadow_tree.node.reparent(self.session.layers.get(shadow_layer));
+
+    const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
+    self.scene.node.reparent(self.session.layers.get(layer));
+
+    try self.updateSize();
+}
+
+pub fn updateTop(self: *Client) !void {
+    std.log.info("update top", .{});
+    defer self.dirty.top = false;
+
+    try self.updateFrame();
+
+    self.frame.shadow_tree.node.raiseToTop();
+    self.scene.node.raiseToTop();
+}
+
+pub fn cleanDirty(self: *Client) !void {
+    if (self.dirty.visible)
+        try self.updateVisible();
+
+    if (!self.visible)
+        return;
+
+    if (self.dirty.floating)
+        try self.updateFloating();
+
+    if (self.dirty.frame)
+        try self.updateFrame();
+
+    if (self.dirty.title)
+        try self.updateTitles();
+
+    if (self.dirty.size)
+        try self.updateSize();
+
+    if (self.dirty.top)
+        try self.updateTop();
 }
 
 pub fn init(session: *Session, target: ClientSurface) !void {
@@ -462,16 +598,23 @@ pub fn init(session: *Session, target: ClientSurface) !void {
                     (objects.client == null and objects.layer_surface == null))
                     return;
 
-                const parent: *wlr.SceneTree = @ptrFromInt(surface.role_data.popup.?.parent.?.data);
+                const parent = @as(?*wlr.SceneTree, @ptrFromInt(surface.role_data.popup.?.parent.?.data)) orelse
+                    if (objects.client) |client|
+                        client.popup_surface
+                    else if (objects.layer_surface) |layer_surface|
+                        layer_surface.scene_tree
+                    else
+                        unreachable;
+
                 const new_surface = try parent.createSceneXdgSurface(surface);
                 surface.surface.data = @intFromPtr(new_surface);
+                new_surface.node.raiseToTop();
 
                 if ((objects.client != null and objects.client.?.monitor == null) or
                     (objects.layer_surface != null and objects.layer_surface.?.monitor == null))
                     return;
 
-                var box =
-                    if (objects.client) |client|
+                var box = if (objects.client) |client|
                     client.monitor.?.window
                 else if (objects.layer_surface) |layer_surface|
                     layer_surface.monitor.?.mode
@@ -479,13 +622,13 @@ pub fn init(session: *Session, target: ClientSurface) !void {
                     unreachable;
 
                 box.x -= if (objects.client) |client|
-                    client.bounds.x + client.inner_bounds.x
+                    client.getInnerBounds().x
                 else if (objects.layer_surface) |layer_surface|
                     layer_surface.bounds.x
                 else
                     unreachable;
                 box.y -= if (objects.client) |client|
-                    client.bounds.y + client.inner_bounds.y
+                    client.getInnerBounds().y
                 else if (objects.layer_surface) |layer_surface|
                     layer_surface.bounds.y
                 else
@@ -576,11 +719,12 @@ pub fn map(self: *Client) !void {
         else
             return,
     };
+    self.popup_surface = try self.scene.createSceneTree();
 
     self.scene.node.data = @intFromPtr(self);
     self.scene_surface.node.data = @intFromPtr(self);
 
-    self.scene.node.setEnabled(true);
+    self.scene.node.setEnabled(false);
     self.scene_surface.node.setEnabled(true);
 
     var geom: wlr.Box = undefined;
@@ -589,21 +733,12 @@ pub fn map(self: *Client) !void {
             xdg.getGeometry(&geom);
         },
         .X11 => |x11| {
-            // if (self.managed) {
-            //     geom = .{
-            //         .x = 0,
-            //         .y = 0,
-            //         .width = 0,
-            //         .height = 0,
-            //     };
-            // } else {
             geom = .{
                 .x = x11.x,
                 .y = x11.y,
                 .width = x11.width,
                 .height = x11.height,
             };
-            // }
         },
     }
 
@@ -611,6 +746,8 @@ pub fn map(self: *Client) !void {
         if (self.floating) .title else .border
     else
         .hide, self.session.config.getColor(false, .border), self);
+
+    self.popup_surface.node.raiseToTop();
 
     self.session.clients.append(self);
     self.session.focus_clients.append(self);
@@ -626,25 +763,27 @@ pub fn map(self: *Client) !void {
     else
         self.activateSurface(true);
 
-    if (self.floating)
-        try self.resize(geom)
-    else if (self.monitor) |m|
-        try m.arrangeClients();
-
-    try self.updateFrame();
-
-    try self.setMonitor(self.session.focusedMonitor orelse
-        self.session.monitors.first() orelse
-        return error.fdsa);
+    self.setFloatingSize(geom);
+    self.setContainerSize(geom);
+    self.setVisible(true);
 
     if (self.managed)
         try self.applyRules();
+
+    self.setMonitor(self.session.focusedMonitor orelse
+        self.session.monitors.first() orelse
+        return error.fdsa);
+
+    if (self.monitor) |m|
+        m.dirty.layout = true;
+
+    try self.cleanDirty();
 }
 
 pub fn applyRules(self: *Client) !void {
-    try self.setBorder(0);
-    try self.setFloating(true);
-    try self.setIcon("?");
+    self.setBorder(0);
+    self.setFloating(true);
+    self.setIcon("?");
     try self.session.config.applyRules(self);
 }
 
@@ -788,55 +927,53 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     return result;
 }
 
-pub fn resize(self: *Client, in_target_bounds: wlr.Box) ClientError!void {
-    self.inner_bounds = self.applyBounds(in_target_bounds, false);
-
-    self.bounds = self.applyBounds(in_target_bounds, false);
-
-    const title_height = self.session.config.getTitleHeight();
-
-    switch (self.frame.kind) {
-        .hide => {
-            self.inner_bounds.x = 0;
-            self.inner_bounds.y = 0;
-            self.inner_bounds.width = self.bounds.width;
-            self.inner_bounds.height = self.bounds.height;
-        },
-        .border => {
-            self.inner_bounds.x = self.border;
-            self.inner_bounds.y = self.border;
-            self.inner_bounds.width = self.bounds.width - self.border - self.border;
-            self.inner_bounds.height = self.bounds.height - self.border - self.border;
-        },
-        .title => {
-            self.inner_bounds.x = self.border;
-            self.inner_bounds.y = self.border + title_height + self.border;
-            self.inner_bounds.width = self.bounds.width - self.border - self.border;
-            self.inner_bounds.height = self.bounds.height - self.border - title_height - self.border - self.border;
-        },
-    }
-
-    self.resize_serial = self.updateSize();
-
-    try self.updateFrame();
+pub fn raiseToTop(self: *Client) void {
+    self.dirty.top = true;
 }
 
-pub inline fn setContainer(self: *Client, container: u8) !void {
+pub fn setVisible(self: *Client, visible: bool) void {
+    if (visible == self.visible)
+        return;
+
+    self.visible = visible;
+    self.dirty.visible = true;
+}
+
+pub fn setFloatingSize(self: *Client, in_target_bounds: wlr.Box) void {
+    self.floating_bounds = self.applyBounds(in_target_bounds, false);
+    if (self.floating)
+        self.dirty.size = true;
+}
+
+pub fn setContainerSize(self: *Client, in_target_bounds: wlr.Box) void {
+    self.container_bounds = self.applyBounds(in_target_bounds, false);
+    if (!self.floating)
+        self.dirty.size = true;
+}
+
+pub inline fn setContainer(self: *Client, container: u8) void {
     if (self.container == container)
         return;
 
     self.container = container;
 
+    self.dirty.container = true;
+
     std.log.info("set container: {}", .{self.container});
 
-    if (!self.floating and self.frame.is_init)
-        try self.session.focusClient(self, true);
+    if (!self.floating) {
+        var iter = self.session.clients.iterator(.forward);
+        while (iter.next()) |client| {
+            if (self.sharesTabs(client))
+                client.dirty.title = true;
+        }
 
-    if (self.monitor) |m|
-        try m.arrangeClients();
+        if (self.monitor) |m|
+            m.dirty.layout = true;
+    }
 }
 
-pub inline fn setFrame(self: *Client, frame: FrameKind) !void {
+pub inline fn setFrame(self: *Client, frame: FrameKind) void {
     if (self.frame.kind == frame)
         return;
 
@@ -845,19 +982,18 @@ pub inline fn setFrame(self: *Client, frame: FrameKind) !void {
     else
         self.frame.kind = .hide;
 
-    try self.resize(self.bounds);
+    self.dirty.frame = true;
 }
 
-pub inline fn setBorder(self: *Client, border: i32) !void {
+pub inline fn setBorder(self: *Client, border: i32) void {
     if (self.border == border)
         return;
 
     self.border = border;
-
-    try self.resize(self.bounds);
+    self.dirty.frame = true;
 }
 
-pub inline fn setIcon(self: *Client, icon: ?[:0]const u8) !void {
+pub inline fn setIcon(self: *Client, icon: ?[:0]const u8) void {
     if (self.icon) |old_icon|
         allocator.free(old_icon);
 
@@ -866,10 +1002,10 @@ pub inline fn setIcon(self: *Client, icon: ?[:0]const u8) !void {
     else
         self.icon = null;
 
-    try self.updateFrame();
+    self.dirty.title = true;
 }
 
-pub inline fn setLabel(self: *Client, label: ?[:0]const u8) !void {
+pub inline fn setLabel(self: *Client, label: ?[:0]const u8) void {
     if (self.label) |old_label|
         allocator.free(old_label);
 
@@ -878,27 +1014,27 @@ pub inline fn setLabel(self: *Client, label: ?[:0]const u8) !void {
     else
         self.label = null;
 
-    try self.updateFrame();
+    self.dirty.title = true;
 }
 
-pub inline fn setTag(self: *Client, tag: u8) !void {
+pub inline fn setTag(self: *Client, tag: u8) void {
     if (self.tag == tag)
         return;
 
     self.tag = tag;
 
     if (self.monitor) |m|
-        try m.arrangeClients();
+        m.dirty.layout = true;
 }
 
-pub inline fn setFullscreen(self: *Client, fullscreen: bool) !void {
+pub inline fn setFullscreen(self: *Client, fullscreen: bool) void {
     _ = self;
     _ = fullscreen;
 
     return;
 }
 
-pub inline fn setFloating(self: *Client, floating: bool) !void {
+pub inline fn setFloating(self: *Client, floating: bool) void {
     if (self.floating == floating)
         return;
 
@@ -909,26 +1045,27 @@ pub inline fn setFloating(self: *Client, floating: bool) !void {
         return;
 
     self.floating = floating;
-
-    const layer: Session.Layer = if (self.floating) .LyrFloat else .LyrTile;
-    self.scene.node.reparent(self.session.layers.get(layer));
+    self.dirty.floating = true;
 
     if (self.monitor) |m|
-        try m.arrangeClients();
+        m.dirty.layout = true;
 
     if (!self.frame.is_init)
         return;
 
     if (self.floating)
-        try self.setFrame(.title);
+        self.setFrame(.title);
 }
 
-pub fn updateSize(self: *Client) u32 {
+pub fn updateSizeSerial(self: *Client) ?u32 {
+    const bounds = self.getBounds();
+    const inner_bounds = self.getInnerBounds();
+
     const inner: wlr.Box = .{
-        .x = self.bounds.x + self.inner_bounds.x,
-        .y = self.bounds.y + self.inner_bounds.y,
-        .width = self.inner_bounds.width,
-        .height = self.inner_bounds.height,
+        .x = bounds.x + inner_bounds.x,
+        .y = bounds.y + inner_bounds.y,
+        .width = inner_bounds.width,
+        .height = inner_bounds.height,
     };
 
     if (self.surface == .X11) {
@@ -939,24 +1076,21 @@ pub fn updateSize(self: *Client) u32 {
             @intCast(inner.height),
         );
 
-        return 0;
+        return null;
     }
 
-    if (self.surface.XDG.role_data.toplevel == null) return 0;
+    if (self.surface.XDG.role_data.toplevel == null) return null;
 
     if (inner.width == self.surface.XDG.role_data.toplevel.?.current.width and
         inner.height == self.surface.XDG.role_data.toplevel.?.current.height)
-        return 0;
+        return null;
 
     return self.surface.XDG.role_data.toplevel.?.setSize(inner.width, inner.height);
 }
 
 pub fn commit(self: *Client) !void {
-    if (self.getSurface().mapped)
-        try self.resize(self.bounds);
-
-    if (self.resize_serial != 0 and self.resize_serial <= self.surface.XDG.current.configure_serial)
-        self.resize_serial = 0;
+    if (self.resize_serial != null and self.resize_serial.? <= self.surface.XDG.current.configure_serial)
+        self.resize_serial = null;
 }
 
 pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !void {
@@ -964,14 +1098,14 @@ pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !vo
         return;
 
     if (self.floating or !self.managed)
-        try self.resize(.{
+        self.setFloatingSize(.{
             .x = event.x,
             .y = event.y,
             .width = event.width,
             .height = event.height,
         })
     else if (self.monitor) |m|
-        try m.arrangeClients();
+        m.dirty.layout = true;
 }
 
 pub fn activate(self: *Client) !void {
@@ -989,6 +1123,11 @@ pub fn unmap(self: *Client) !void {
         _ = try self.session.input.endDrag();
 
     std.log.info("unmap {*}", .{self});
+
+    if (self.monitor) |m| {
+        m.dirty.tabs = true;
+        m.dirty.layout = true;
+    }
 
     try self.clearMonitor();
 
@@ -1020,10 +1159,8 @@ pub fn unmap(self: *Client) !void {
 
     self.scene.node.destroy();
 
-    try self.session.input.motionNotify(0);
-
-    try self.setIcon(null);
-    try self.setLabel(null);
+    self.setIcon(null);
+    self.setLabel(null);
 }
 
 pub fn deinit(self: *Client) void {
@@ -1083,6 +1220,9 @@ pub fn notifyEnter(self: *Client, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
 }
 
 pub fn activateSurface(self: *Client, active: bool) void {
+    self.dirty.frame = true;
+    self.active = active;
+
     switch (self.surface) {
         .X11 => |surface| surface.activate(active),
         .XDG => |surface| _ = surface.role_data.toplevel.?.setActivated(active),
@@ -1096,45 +1236,41 @@ pub fn close(self: *Client) void {
     }
 }
 
-pub fn setMonitor(self: *Client, target_monitor: *Monitor) !void {
+pub fn setMonitor(self: *Client, target_monitor: *Monitor) void {
     const old_monitor = self.monitor;
 
     if (old_monitor == target_monitor)
         return;
 
     self.monitor = target_monitor;
-    self.prev_bounds = self.bounds;
 
     if (old_monitor) |old| {
         self.getSurface().sendLeave(old.output);
 
-        try old.arrangeClients();
+        old.dirty.layout = true;
 
-        try self.resize(.{
-            .x = self.bounds.x - old.mode.x + target_monitor.mode.x,
-            .y = self.bounds.y - old.mode.y + target_monitor.mode.y,
-            .width = self.bounds.width,
-            .height = self.bounds.height,
+        self.setFloatingSize(.{
+            .x = self.floating_bounds.x - old.mode.x + target_monitor.mode.x,
+            .y = self.floating_bounds.y - old.mode.y + target_monitor.mode.y,
+            .width = self.floating_bounds.width,
+            .height = self.floating_bounds.height,
         });
     } else {
-        try self.resize(.{
-            .x = self.bounds.x + target_monitor.mode.x,
-            .y = self.bounds.y + target_monitor.mode.y,
-            .width = self.bounds.width,
-            .height = self.bounds.height,
+        self.setFloatingSize(.{
+            .x = self.floating_bounds.x + target_monitor.mode.x,
+            .y = self.floating_bounds.y + target_monitor.mode.y,
+            .width = self.floating_bounds.width,
+            .height = self.floating_bounds.height,
         });
     }
 
     self.getSurface().sendEnter(target_monitor.output);
 
-    try self.setTag(target_monitor.tag);
+    self.setTag(target_monitor.tag);
 
-    try self.setFullscreen(self.fullscreen);
+    self.setFullscreen(self.fullscreen);
 
-    try target_monitor.arrangeClients();
-
-    try self.session.focusClient(self, true);
-    try self.updateFrame();
+    target_monitor.dirty.layout = true;
 }
 
 pub fn clearMonitor(self: *Client) !void {
@@ -1144,14 +1280,12 @@ pub fn clearMonitor(self: *Client) !void {
         return;
 
     self.monitor = null;
-    self.prev_bounds = self.bounds;
 
     if (old_monitor) |old| {
         self.getSurface().sendLeave(old.output);
 
-        try old.arrangeClients();
+        old.dirty.layout = true;
     }
 
     try self.session.focusClient(self, true);
-    try self.updateFrame();
 }

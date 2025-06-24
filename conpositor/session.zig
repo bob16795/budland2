@@ -99,9 +99,7 @@ const STACKING_ORDER = [_]Layer{
     .LyrBg,
     .LyrBottom,
 
-    .LyrTileShadows,
     .LyrTile,
-    .LyrFloatShadows,
     .LyrFloat,
     .LyrFS,
     .LyrDragIcon,
@@ -276,9 +274,9 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 
         ok = ok and
             if (is_test)
-            wlr_output.testState(&state)
-        else
-            wlr_output.commitState(&state);
+                wlr_output.testState(&state)
+            else
+                wlr_output.commitState(&state);
 
         std.log.info("move monitor {*}, {} {}", .{ monitor, monitor.mode, monitor.window });
     }
@@ -639,7 +637,7 @@ pub fn updateMons(self: *Session) !void {
             var iter = self.clients.iterator(.forward);
             while (iter.next()) |client| {
                 if (client.monitor == null and client.isMapped()) {
-                    try client.setMonitor(selected);
+                    client.setMonitor(selected);
                 }
             }
 
@@ -695,36 +693,6 @@ pub fn getSurfaceObjects(self: *Session, surface: *wlr.Surface) ObjectData {
     return .{};
 }
 
-const ViewAtResult = struct {
-    toplevel: *Client,
-    sx: f64,
-    sy: f64,
-};
-
-pub fn viewAt(session: *Session, lx: f64, ly: f64) ?ViewAtResult {
-    var sx: f64 = undefined;
-    var sy: f64 = undefined;
-
-    if (session.scene.tree.node.at(lx, ly, &sx, &sy)) |node| {
-        if (node.type != .buffer) return null;
-
-        const scene_buffer = wlr.SceneBuffer.fromNode(node);
-        const scene_surface = wlr.SceneSurface.tryFromBuffer(scene_buffer) orelse return null;
-
-        var it: ?*wlr.SceneTree = node.parent;
-        while (it) |n| : (it = n.node.parent) {
-            if (@as(?*Client, @ptrFromInt(n.node.data))) |toplevel| {
-                return ViewAtResult{
-                    .toplevel = toplevel,
-                    .surface = scene_surface.surface,
-                    .sx = sx,
-                    .sy = sy,
-                };
-            }
-        }
-    }
-}
-
 pub fn quit(self: *Session) void {
     std.log.info("Quitting conpositor", .{});
     self.server.terminate();
@@ -738,10 +706,8 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
 
     const old_focus = input.seat.keyboard_state.focused_surface;
 
-    if (lift or !client.floating) {
-        client.frame.shadow_tree.node.raiseToTop();
-        client.scene.node.raiseToTop();
-    }
+    if (lift)
+        client.raiseToTop();
 
     if (client.getSurface() == old_focus)
         return;
@@ -751,15 +717,19 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
         self.focus_clients.prepend(client);
         if (client.surface == .X11)
             client.surface.X11.restack(null, .above);
+
+        client.dirty.frame = true;
+        client.dirty.title = true;
     }
 
     if (old_focus != null and (client.getSurface() != old_focus)) {
         if (old_focus.? == self.exclusive_focus)
             return;
+    }
 
-        const old_client: ?*Client = self.getSurfaceObjects(old_focus.?).client;
-        if (old_client) |old|
-            old.activateSurface(false);
+    const old_client: ?*Client = self.focusedClient();
+    if (old_client) |old| {
+        old.activateSurface(false);
     }
 
     try self.input.motionNotify(0);
@@ -770,14 +740,15 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
 pub fn focusClear(self: *Session) void {
     const input = self.input;
 
-    if (input.locked) return;
+    if (input.locked)
+        return;
 
-    const old_focus = input.seat.keyboard_state.focused_surface;
+    const old_client: ?*Client = self.focusedClient();
+    if (old_client) |old_focus_client| {
+        old_focus_client.dirty.frame = true;
+        old_focus_client.dirty.title = true;
 
-    if (old_focus) |old| {
-        const old_client: ?*Client = self.getSurfaceObjects(old).client;
-        if (old_client) |old_focus_client|
-            old_focus_client.activateSurface(false);
+        old_focus_client.activateSurface(false);
     }
 
     self.input.seat.keyboardNotifyClearFocus();
@@ -797,19 +768,18 @@ pub const ObjectData = struct {
 pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
     var result: ObjectData = .{};
 
+    result.monitor = if (self.output_layout.outputAt(x, y)) |output|
+        @as(?*Monitor, @ptrFromInt(output.data))
+    else
+        null;
+
     for (FOCUS_ORDER) |layer_id| {
         const layer = self.layers.get(layer_id);
-        const node = layer.node.at(x, y, &result.surface_x, &result.surface_y);
+        const node = layer.node.at(x, y, &result.surface_x, &result.surface_y) orelse
+            continue;
 
-        if (node != null and node.?.type == .buffer) {
-            const scene_buffer = wlr.SceneBuffer.fromNode(node.?);
-
-            if (wlr.SceneSurface.tryFromBuffer(scene_buffer)) |scene_surface|
-                result.surface = scene_surface.surface;
-        }
-
-        var pnode = node;
-        while (pnode != null and result.client == null) : (pnode = &pnode.?.parent.?.node) {
+        var pnode: ?*wlr.SceneNode = node;
+        while (pnode != null and (result.client == null and result.layer_surface == null)) : (pnode = &pnode.?.parent.?.node) {
             result.client = @as(?*Client, @ptrFromInt(pnode.?.data));
             result.layer_surface = @as(?*LayerSurface, @ptrFromInt(pnode.?.data));
 
@@ -821,10 +791,8 @@ pub fn getObjectsAt(self: *Session, x: f64, y: f64) ObjectData {
         }
     }
 
-    result.monitor = if (self.output_layout.outputAt(x, y)) |output|
-        @as(?*Monitor, @ptrFromInt(output.data))
-    else
-        null;
+    if (result.client) |client|
+        result.surface = client.getSurface();
 
     return result;
 }
@@ -833,6 +801,9 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
     const sel = self.focusedClient() orelse return;
 
     if (sel.fullscreen)
+        return;
+
+    if (sel.floating)
         return;
 
     const selmon = sel.monitor orelse return;
@@ -846,7 +817,7 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
                     continue;
                 if (selmon.clientVisible(client) and
                     client.container == sel.container and
-                    client.floating == sel.floating)
+                    !client.floating)
                     break :blk client;
             }
 
@@ -860,7 +831,7 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
                     continue;
                 if (selmon.clientVisible(client) and
                     client.container == sel.container and
-                    client.floating == sel.floating)
+                    !client.floating)
                     break :blk client;
             }
 
@@ -877,7 +848,7 @@ pub fn reloadColors(self: *Session) !void {
     //     try monitor.arrangeLayers();
     var iter = self.clients.iterator(.forward);
     while (iter.next()) |client|
-        try client.updateFrame();
+        client.dirty.frame = true;
 }
 
 pub fn addIpc(self: *Session, resource: *conpositor.IpcSessionV1) void {

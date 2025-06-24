@@ -64,7 +64,10 @@ pub const Container = struct {
         return false;
     }
 
-    pub fn childrenUsed(self: *const Container, usage: []bool) usize {
+    pub fn childrenUsed(
+        self: *const Container,
+        usage: *const [256]bool,
+    ) usize {
         var result: usize = 0;
 
         if (self.stack) |stack| {
@@ -80,7 +83,10 @@ pub const Container = struct {
         return result;
     }
 
-    pub fn used(self: *const Container, usage: []bool) usize {
+    pub fn used(
+        self: *const Container,
+        usage: *const [256]bool,
+    ) usize {
         var result: usize = 0;
 
         if (self.stack) |stack| {
@@ -95,7 +101,11 @@ pub const Container = struct {
         return result;
     }
 
-    pub fn getSize(self: *const Container, idx: u8, usage: []bool) ?Size {
+    pub fn getSize(
+        self: *const Container,
+        idx: u8,
+        usage: *const [256]bool,
+    ) ?Size {
         if (!self.has(idx))
             return null;
 
@@ -140,11 +150,22 @@ pub const Container = struct {
 name: [:0]const u8,
 container: *Container,
 
+pub fn calcDirty(
+    self: *const Layout,
+    last_usage: *const [256]bool,
+    usage: *const [256]bool,
+) bool {
+    for (last_usage, usage, 0..) |last_used, used, idx|
+        if (last_used != used and self.container.has(@intCast(idx)))
+            return true;
+    return false;
+}
+
 pub fn getSize(
     self: *const Layout,
     idx: u8,
     bounds: wlr.Box,
-    usage: []bool,
+    usage: *const [256]bool,
     gaps_inner: i32,
     gaps_outer: i32,
 ) wlr.Box {

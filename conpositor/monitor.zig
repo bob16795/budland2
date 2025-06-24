@@ -34,6 +34,14 @@ gaps_outer: i32 = 0,
 
 frame_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.frame),
 deinit_event: wl.Listener(*wlr.Output) = wl.Listener(*wlr.Output).init(Listeners.deinit),
+last_usage: [256]bool = .{false} ** 256,
+last_frame: std.posix.timespec = .{ .sec = 0, .nsec = 0 },
+
+dirty: packed struct {
+    layout: bool = false,
+    force_layout: bool = false,
+    tabs: bool = false,
+} = .{},
 
 const Listeners = struct {
     fn frame(listener: *wl.Listener(*wlr.Output), _: *wlr.Output) void {
@@ -130,23 +138,49 @@ pub fn create(session: *Session, output: *wlr.Output) !void {
 
 pub fn frame(self: *Monitor) !void {
     // TODO:Figure out why this skips
+
+    // const tmp_now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
+    //     @panic("CLOCK_MONOTONIC not supported");
     // commit: {
-    //     var iter = self.session.clients.iterator(.forward);
-    //     while (iter.next()) |client| {
-    //         if (client.pending_resize and
-    //             !client.floating and
-    //             client.managed and
-    //             client.surface == .XDG and
-    //             self.clientVisible(client) and
-    //             !client.isStopped())
-    //             break :commit;
+    //     // give a layout 300ns to apply
+    //     if (tmp_now.nsec - self.last_frame.nsec < 300_000) {
+    //         var iter = self.session.clients.iterator(.forward);
+    //         while (iter.next()) |client| {
+    //             if (client.resize_serial != null and
+    //                 client.surface == .XDG and
+    //                 client.monitor == self and
+    //                 self.clientVisible(client) and
+    //                 !client.isStopped())
+    //                 break :commit;
+    //         }
+    //     } else {
+    //         var iter = self.session.clients.iterator(.forward);
+    //         while (iter.next()) |client| {
+    //             client.resize_serial = null;
+    //         }
     //     }
-    _ = self.scene_output.commit(null);
+
+    //     _ = self.scene_output.commit(null);
+    //     self.last_frame = tmp_now;
     // }
+
+    _ = self.scene_output.commit(null);
 
     var now: std.posix.timespec = std.posix.clock_gettime(std.posix.CLOCK.MONOTONIC) catch
         @panic("CLOCK_MONOTONIC not supported");
     self.scene_output.sendFrameDone(&now);
+
+    if (self.dirty.layout or self.dirty.force_layout)
+        try self.updateLayout();
+
+    if (self.dirty.tabs)
+        try self.updateTabs();
+
+    var iter = self.session.clients.iterator(.forward);
+    while (iter.next()) |client| {
+        if (client.monitor == self)
+            try client.cleanDirty();
+    }
 }
 
 pub fn close(self: *Monitor) !void {
@@ -162,16 +196,16 @@ pub fn close(self: *Monitor) !void {
 
     var citer = self.session.clients.iterator(.forward);
     while (citer.next()) |client| {
-        if (client.floating and client.monitor == self)
-            try client.resize(.{
-                .x = client.bounds.x - self.mode.x + new_mon.mode.x,
-                .y = client.bounds.y - self.mode.y + new_mon.mode.y,
-                .width = client.bounds.width,
-                .height = client.bounds.height,
+        if (client.monitor == self) {
+            client.setFloatingSize(.{
+                .x = client.floating_bounds.x - self.mode.x + new_mon.mode.x,
+                .y = client.floating_bounds.y - self.mode.y + new_mon.mode.y,
+                .width = client.floating_bounds.width,
+                .height = client.floating_bounds.height,
             });
 
-        if (client.monitor == self)
-            try client.setMonitor(new_mon);
+            client.setMonitor(new_mon);
+        }
     }
     if (new_mon.focusedClient()) |focus|
         try self.session.focusClient(focus, true)
@@ -189,7 +223,7 @@ pub fn arrangeLayers(self: *Monitor) !void {
 
     if (!std.meta.eql(usable, self.window)) {
         self.window = usable;
-        try self.arrangeClients();
+        self.dirty.layout = true;
     }
 
     for (0..4) |i|
@@ -223,7 +257,22 @@ pub fn focusedClient(self: *Monitor) ?*Client {
     } else null;
 }
 
-pub fn arrangeClients(self: *Monitor) !void {
+fn updateTabs(self: *Monitor) !void {
+    defer self.dirty.tabs = false;
+
+    var iter = self.session.focus_clients.iterator(.forward);
+    while (iter.next()) |client| {
+        const visible = self.clientVisible(client);
+        if (client.monitor == self and !client.floating and visible) {
+            client.dirty.title = true;
+        }
+    }
+}
+
+fn updateLayout(self: *Monitor) !void {
+    defer self.dirty.layout = false;
+    defer self.dirty.force_layout = false;
+
     // TODO: dynamic/packed allocation?
     var usage: [256]bool = .{false} ** 256;
 
@@ -239,21 +288,28 @@ pub fn arrangeClients(self: *Monitor) !void {
                     usage[client.container] = true;
                 } else {
                     client.hide_frame = false;
-                    try client.setFrame(.title);
+                    client.setFrame(.title);
                 }
             }
         }
     }
+
+    const resize = if (self.layout) |layout|
+        layout.calcDirty(&self.last_usage, &usage)
+    else
+        false;
+
+    @memcpy(&self.last_usage, &usage);
 
     var iter = self.session.focus_clients.iterator(.forward);
     while (iter.next()) |client| {
         if (client.monitor == self) {
             const visible = self.clientVisible(client);
 
-            if (!client.floating and visible) {
+            if (visible) {
                 const border = if (client.frame.kind == .hide) 0 else client.border;
 
-                const new = if (self.layout) |layout|
+                const new_size = if (self.layout) |layout|
                     layout.getSize(
                         client.container,
                         self.window,
@@ -270,20 +326,19 @@ pub fn arrangeClients(self: *Monitor) !void {
                     };
 
                 if (border != 0) {
-                    try client.setFrame(if (new.y == self.window.y)
+                    client.setFrame(if (new_size.y == self.window.y)
                         .border
                     else
                         .title);
                 }
 
-                try client.resize(new);
+                if (resize or client.dirty.container or self.dirty.force_layout)
+                    client.setContainerSize(new_size);
+
+                client.dirty.container = false;
             }
         }
     }
-
-    iter = self.session.focus_clients.iterator(.forward);
-    while (iter.next()) |client|
-        try client.updateFrame();
 
     // TODO: update fullscreen state
 
@@ -314,14 +369,14 @@ fn arrangeLayer(self: *Monitor, idx: usize, usable: *wlr.Box, exclusive: bool) v
     }
 }
 
-pub fn setTag(self: *Monitor, tag: u8) !void {
+pub fn setTag(self: *Monitor, tag: u8) void {
     if (self.tag == tag)
         return;
 
     const old = self.tag;
 
     self.tag = tag;
-    try self.arrangeClients();
+    self.dirty.layout = true;
 
     var iter = self.ipc_status.iterator(.forward);
     while (iter.next()) |resource| {
@@ -404,7 +459,7 @@ pub fn sendFocus(self: *Monitor) void {
     }
 }
 
-pub fn setGaps(self: *Monitor, pos: enum { inner, outer }, gaps: i32) !void {
+pub fn setGaps(self: *Monitor, pos: enum { inner, outer }, gaps: i32) void {
     const ptr = switch (pos) {
         .inner => &self.gaps_inner,
         .outer => &self.gaps_outer,
@@ -414,11 +469,10 @@ pub fn setGaps(self: *Monitor, pos: enum { inner, outer }, gaps: i32) !void {
         return;
 
     ptr.* = gaps;
-
-    try self.arrangeClients();
+    self.dirty.force_layout = true;
 }
 
-pub fn setLayout(self: *Monitor, layout: ?*Layout) !void {
+pub fn setLayout(self: *Monitor, layout: ?*Layout) void {
     if (self.layout == layout)
         return;
 
@@ -426,7 +480,7 @@ pub fn setLayout(self: *Monitor, layout: ?*Layout) !void {
         return;
 
     self.layout = layout;
-    try self.arrangeClients();
+    self.dirty.force_layout = true;
 
     var iter = self.ipc_status.iterator(.forward);
     while (iter.next()) |resource| {

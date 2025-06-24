@@ -135,7 +135,7 @@ pub const LuaClosure = struct {
         self.lua.unref(zlua.registry_index, self.ref);
     }
 
-    pub fn toLua(self: LuaClosure, lua: *Lua) !void {
+    pub fn toLua(self: LuaClosure, lua: *Lua) void {
         _ = lua.rawGetIndex(zlua.registry_index, self.ref);
         _ = lua.rawGetIndex(-1, 1);
         lua.remove(-2);
@@ -203,7 +203,7 @@ pub const LuaRect = struct {
         };
     }
 
-    pub fn toLua(self: LuaRect, lua: *Lua) !void {
+    pub fn toLua(self: LuaRect, lua: *Lua) void {
         lua.newTable();
         lua.pushNumber(self.x);
         lua.setField(-2, "x");
@@ -240,7 +240,7 @@ pub const LuaVec = struct {
         };
     }
 
-    pub fn toLua(self: LuaVec, lua: *Lua) !void {
+    pub fn toLua(self: LuaVec, lua: *Lua) void {
         lua.newTable();
         lua.pushNumber(self.x);
         lua.setField(-2, "x");
@@ -257,7 +257,7 @@ const LuaTag = struct {
         return result.*;
     }
 
-    pub fn toLua(self: LuaTag, lua: *Lua) !void {
+    pub fn toLua(self: LuaTag, lua: *Lua) void {
         const tmp = lua.newUserdata(LuaTag, 0);
         tmp.* = self;
 
@@ -268,7 +268,7 @@ const LuaTag = struct {
 const LuaContainer = struct {
     child: *Layout.Container,
 
-    pub fn lua_set_stack(parent: *LuaContainer, stack: ?u8) !void {
+    pub fn lua_set_stack(parent: *LuaContainer, stack: ?u8) void {
         const self = parent.child;
 
         self.stack = stack;
@@ -301,7 +301,7 @@ const LuaContainer = struct {
         return result.*;
     }
 
-    pub fn toLua(self: LuaContainer, lua: *Lua) !void {
+    pub fn toLua(self: LuaContainer, lua: *Lua) void {
         const tmp = lua.newUserdata(LuaContainer, 0);
         tmp.* = self;
 
@@ -323,7 +323,7 @@ const LuaLayout = struct {
         return result.*;
     }
 
-    pub fn toLua(self: LuaLayout, lua: *Lua) !void {
+    pub fn toLua(self: LuaLayout, lua: *Lua) void {
         const tmp = lua.newUserdata(LuaLayout, 0);
         tmp.* = self;
 
@@ -347,8 +347,8 @@ pub const LuaMonitor = struct {
         return .{ .id = self.child.tag };
     }
 
-    pub fn lua_set_tag(self: *LuaMonitor, tag: *LuaTag) !void {
-        try self.child.setTag(tag.id);
+    pub fn lua_set_tag(self: *LuaMonitor, tag: *LuaTag) void {
+        self.child.setTag(tag.id);
 
         std.log.info("set tag {}", .{tag.id});
     }
@@ -359,18 +359,18 @@ pub const LuaMonitor = struct {
         };
     }
 
-    pub fn lua_set_layout(self: *LuaMonitor, layout: LuaLayout) !void {
+    pub fn lua_set_layout(self: *LuaMonitor, layout: LuaLayout) void {
         std.log.info("set layout {}", .{layout});
 
-        try self.child.setLayout(layout.child);
+        self.child.setLayout(layout.child);
     }
 
-    pub fn lua_set_inner_gaps(self: *LuaMonitor, size: i32) !void {
-        try self.child.setGaps(.inner, size);
+    pub fn lua_set_inner_gaps(self: *LuaMonitor, size: i32) void {
+        self.child.setGaps(.inner, size);
     }
 
-    pub fn lua_set_outer_gaps(self: *LuaMonitor, size: i32) !void {
-        try self.child.setGaps(.outer, size);
+    pub fn lua_set_outer_gaps(self: *LuaMonitor, size: i32) void {
+        self.child.setGaps(.outer, size);
     }
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaMonitor {
@@ -378,7 +378,7 @@ pub const LuaMonitor = struct {
         return result.*;
     }
 
-    pub fn toLua(self: LuaMonitor, lua: *Lua) !void {
+    pub fn toLua(self: LuaMonitor, lua: *Lua) void {
         const tmp = lua.newUserdata(LuaMonitor, 0);
         tmp.* = self;
 
@@ -391,16 +391,15 @@ const LuaClient = struct {
 
     pub fn lua_get_position(self: *LuaClient) !LuaRect {
         return .{
-            .x = @floatFromInt(self.child.bounds.x),
-            .y = @floatFromInt(self.child.bounds.y),
-            .width = @floatFromInt(self.child.bounds.width),
-            .height = @floatFromInt(self.child.bounds.height),
+            .x = @floatFromInt(self.child.floating_bounds.x),
+            .y = @floatFromInt(self.child.floating_bounds.y),
+            .width = @floatFromInt(self.child.floating_bounds.width),
+            .height = @floatFromInt(self.child.floating_bounds.height),
         };
     }
 
-    pub fn lua_set_position(self: *LuaClient, target: LuaRect) !void {
-        try self.child.setFloating(true);
-        try self.child.resize(.{
+    pub fn lua_set_position(self: *LuaClient, target: LuaRect) void {
+        self.child.setFloatingSize(.{
             .x = @intFromFloat(target.x),
             .y = @intFromFloat(target.y),
             .width = @intFromFloat(target.width),
@@ -408,16 +407,16 @@ const LuaClient = struct {
         });
     }
 
-    pub fn lua_set_border(self: *LuaClient, border: i32) !void {
-        try self.child.setBorder(border);
+    pub fn lua_set_border(self: *LuaClient, border: i32) void {
+        self.child.setBorder(border);
     }
 
-    pub fn lua_set_icon(self: *LuaClient, icon: ?[:0]const u8) !void {
-        try self.child.setIcon(@ptrCast(icon));
+    pub fn lua_set_icon(self: *LuaClient, icon: ?[:0]const u8) void {
+        self.child.setIcon(@ptrCast(icon));
     }
 
-    pub fn lua_set_label(self: *LuaClient, label: ?[:0]const u8) !void {
-        try self.child.setLabel(label);
+    pub fn lua_set_label(self: *LuaClient, label: ?[:0]const u8) void {
+        self.child.setLabel(label);
     }
 
     pub fn lua_get_label(self: *LuaClient) ?[:0]const u8 {
@@ -432,25 +431,25 @@ const LuaClient = struct {
         return self.child.getTitle();
     }
 
-    pub fn lua_set_tag(self: *LuaClient, tag: *LuaTag) !void {
-        try self.child.setTag(tag.id);
+    pub fn lua_set_tag(self: *LuaClient, tag: *LuaTag) void {
+        self.child.setTag(tag.id);
     }
 
-    pub fn lua_set_monitor(self: *LuaClient, monitor: LuaMonitor) !void {
-        try self.child.setMonitor(monitor.child);
+    pub fn lua_set_monitor(self: *LuaClient, monitor: LuaMonitor) void {
+        self.child.setMonitor(monitor.child);
     }
 
-    pub fn lua_set_stack(self: *LuaClient, stack: u8) !void {
-        try self.child.setContainer(stack);
-        try self.child.setFloating(false);
+    pub fn lua_set_stack(self: *LuaClient, stack: u8) void {
+        self.child.setContainer(stack);
+        self.child.setFloating(false);
 
         std.log.info("set container {}", .{stack});
     }
 
-    pub fn lua_set_container(self: *LuaClient, container: *LuaContainer) !void {
+    pub fn lua_set_container(self: *LuaClient, container: *LuaContainer) void {
         if (container.child.stack) |stack| {
-            try self.child.setContainer(stack);
-            try self.child.setFloating(false);
+            self.child.setContainer(stack);
+            self.child.setFloating(false);
 
             std.log.info("set container {}", .{stack});
         }
@@ -460,8 +459,8 @@ const LuaClient = struct {
         return self.child.floating;
     }
 
-    pub fn lua_set_floating(self: *LuaClient, value: bool) !void {
-        try self.child.setFloating(value);
+    pub fn lua_set_floating(self: *LuaClient, value: bool) void {
+        self.child.setFloating(value);
     }
 
     pub fn lua_get_stack(self: *LuaClient) ?LuaStack {
@@ -478,7 +477,7 @@ const LuaClient = struct {
         return result.*;
     }
 
-    pub fn toLua(self: LuaClient, lua: *Lua) !void {
+    pub fn toLua(self: LuaClient, lua: *Lua) void {
         const tmp = lua.newUserdata(LuaClient, 0);
         tmp.* = self;
 
@@ -494,7 +493,7 @@ const LuaStack = struct {
         return result.*;
     }
 
-    pub fn toLua(self: LuaStack, lua: *Lua) !void {
+    pub fn toLua(self: LuaStack, lua: *Lua) void {
         const tmp = lua.newUserdata(LuaStack, 0);
         tmp.* = self;
 

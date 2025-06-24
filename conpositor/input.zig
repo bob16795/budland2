@@ -263,8 +263,6 @@ keyboards: wl.list.Head(Keyboard, .link) = undefined,
 locked: bool = false,
 
 grab_client: ?*Client = null,
-grab_x: i32 = 0,
-grab_y: i32 = 0,
 
 pub fn init(self: *Input, session: *Session) !void {
     self.events = .{};
@@ -380,10 +378,10 @@ pub fn motionNotify(
         self.cursor.setXcursor(self.xcursor_manager, self.xcursor_image.?);
     }
 
-    try self.pointerFocus(objects.client, objects.surface, objects.surface_x, objects.surface_y, time);
+    try self.pointerFocus(objects.client, objects.surface, time);
 }
 
-pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surface, x: f64, y: f64, time: usize) !void {
+pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surface, time: usize) !void {
     const internal_call = time == 0;
     var atime: usize = time;
 
@@ -404,8 +402,20 @@ pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surfac
         atime = @bitCast(now.sec * 1000 + @divTrunc(now.nsec, 1000000));
     }
 
-    self.seat.pointerNotifyEnter(surface.?, x, y);
-    self.seat.pointerNotifyMotion(@intCast(atime), x, y);
+    if (target_client) |client| {
+        const bounds = client.getBounds();
+        const inner_bounds = client.getInnerBounds();
+
+        const x = self.cursor.x -
+            @as(f64, @floatFromInt(inner_bounds.x)) -
+            @as(f64, @floatFromInt(bounds.x));
+        const y = self.cursor.y -
+            @as(f64, @floatFromInt(inner_bounds.y)) -
+            @as(f64, @floatFromInt(bounds.y));
+
+        self.seat.pointerNotifyEnter(surface.?, x, y);
+        self.seat.pointerNotifyMotion(@intCast(atime), x, y);
+    }
 }
 
 pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
@@ -420,7 +430,7 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
             const objects = self.session.getObjectsAt(self.cursor.x, self.cursor.y);
 
             if (objects.client) |target| {
-                if (target.managed)
+                if (!target.managed)
                     try self.session.focusClient(target, true);
 
                 const keyboard = self.seat.getKeyboard();
@@ -448,13 +458,15 @@ pub fn endDrag(self: *Input) !bool {
         if (self.xcursor_image) |xcursor_image|
             self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
 
-        self.seat.pointerClearFocus();
+        // self.seat.pointerClearFocus();
         try self.motionNotify(0);
 
         self.grab_client = null;
 
         return true;
-    } else self.cursor_mode = .normal;
+    }
+
+    self.cursor_mode = .normal;
 
     return false;
 }
