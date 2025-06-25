@@ -7,6 +7,7 @@ const CairoBuffer = @import("cairobuffer.zig");
 const Session = @import("session.zig");
 const Monitor = @import("monitor.zig");
 const Config = @import("config.zig");
+const Tab = @import("tab.zig");
 
 const Client = @This();
 
@@ -215,7 +216,6 @@ client_id: u8 = 10,
 session: *Session,
 surface: ClientSurface,
 events: ClientEvents = .{},
-active: bool = false,
 
 scene: *wlr.SceneTree = undefined,
 scene_surface: *wlr.SceneTree = undefined,
@@ -231,6 +231,7 @@ fullscreen: bool = false,
 frame: ClientFrame = .{},
 visible: bool = true,
 hide_frame: bool = false,
+active: bool = false,
 
 resize_serial: ?u32 = null,
 
@@ -252,6 +253,7 @@ container: u8 = 0,
 floating: bool = true,
 tag: u8 = 0,
 border: i32 = 0,
+tab: Tab = .{},
 
 // TODO: move this to config
 const SHADOW_SIZE = 10;
@@ -292,10 +294,10 @@ pub fn getInnerBounds(self: *Client) wlr.Box {
 fn sharesTabs(self: *const Client, other: *Client) bool {
     return self == other or
         (self.container == other.container and
-            !self.floating and
-            !other.floating and
-            self.tag == other.tag and
-            self.monitor == other.monitor);
+        !self.floating and
+        !other.floating and
+        self.tag == other.tag and
+        self.monitor == other.monitor);
 }
 
 fn updateSize(self: *Client) !void {
@@ -313,16 +315,15 @@ fn updateSize(self: *Client) !void {
     const inner_bounds = self.getInnerBounds();
     const bounds = self.getBounds();
 
-    const clip: wlr.Box = .{
-        .x = 0,
-        .y = 0,
-        .width = inner_bounds.width,
-        .height = inner_bounds.height,
-    };
-
-    self.scene_surface.node.subsurfaceTreeSetClip(&clip);
-
     if (self.managed) {
+        const clip: wlr.Box = .{
+            .x = 0,
+            .y = 0,
+            .width = inner_bounds.width,
+            .height = inner_bounds.height,
+        };
+
+        self.scene_surface.node.subsurfaceTreeSetClip(&clip);
         self.scene.node.setPosition(bounds.x, bounds.y);
         self.scene_surface.node.setPosition(inner_bounds.x, inner_bounds.y);
         self.popup_surface.node.setPosition(inner_bounds.x, inner_bounds.y);
@@ -337,7 +338,7 @@ fn updateSize(self: *Client) !void {
         self.floating_bounds.x = self.surface.X11.x;
         self.floating_bounds.y = self.surface.X11.y;
 
-        self.scene.node.reparent(self.session.layers.get(.LyrFloat));
+        self.scene.node.reparent(self.session.layers.get(.LyrTop));
         self.scene.node.setPosition(self.floating_bounds.x, self.floating_bounds.y);
     }
 
@@ -366,8 +367,6 @@ fn updateSize(self: *Client) !void {
 
         try self.updateTitles();
     }
-
-    try self.session.input.motionNotify(0);
 }
 
 fn updateFrame(self: *Client) !void {
@@ -382,7 +381,9 @@ fn updateFrame(self: *Client) !void {
     self.frame.border_tree.node.setEnabled(self.frame.kind == .title or self.frame.kind == .border);
     self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
 
-    const border_color = self.session.config.getColor(self.active, .border);
+    const active = self == self.session.focusedClient();
+
+    const border_color = self.session.config.getColor(active, .border);
 
     for (self.frame.sides) |side|
         side.setColor(border_color);
@@ -401,7 +402,6 @@ fn updateTabs(self: *Client) !void {
         return;
 
     var tab_count: i32 = 0;
-    var border_focus = false;
     {
         var iter = self.session.clients.iterator(.forward);
         while (iter.next()) |tab_client| {
@@ -409,18 +409,14 @@ fn updateTabs(self: *Client) !void {
                 continue;
 
             tab_count += 1;
-
-            if (tab_client.active)
-                border_focus = true;
         }
     }
 
     const title_height = self.session.config.getTitleHeight();
 
     const total_width: i32 = bounds.width;
-    const total_height: i32 = title_height + self.border;
+    const total_height: i32 = self.border + title_height + self.border;
     const ftab_width: f64 = @as(f64, @floatFromInt(total_width)) / @as(f64, @floatFromInt(tab_count));
-    const title_pad = self.session.config.getTitlePad();
 
     var context = try self.frame.title_buffer.beginContext();
     defer self.frame.title_buffer.endContext(&context);
@@ -439,71 +435,79 @@ fn updateTabs(self: *Client) !void {
         const tab_start: i32 = @intFromFloat(ftab_width * @as(f64, @floatFromInt(current_tab)));
         const tab_end: i32 = @intFromFloat(ftab_width * @as(f64, @floatFromInt(current_tab + 1)));
         const tab_width: i32 = tab_end - tab_start;
+        const tab_height: i32 = total_height;
 
-        const tab_focus = tab_client == self;
-
-        const label = tab_client.getLabel();
-        const label_extents = context.textExtents(label.ptr);
-
-        const label_y_bearing: i32 = @intFromFloat(label_extents.y_bearing);
-        const label_height: i32 = @intFromFloat(label_extents.height);
-
-        const icon = tab_client.icon orelse "?";
-        const icon_extents = context.textExtents(icon.ptr);
-        const icon_width: i32 = @intFromFloat(icon_extents.width);
-        const icon_height: i32 = @intFromFloat(icon_extents.height);
-        const icon_y_bearing: i32 = @intFromFloat(icon_extents.y_bearing);
-
-        const fg = self.session.config.getColor(tab_focus, .foreground);
-        const bg = self.session.config.getColor(tab_focus, .background);
-        const border_color = self.session.config.getColor(tab_focus, .border);
-
-        var fade_pattern = try cairo.Pattern.createLinear(
-            @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad - 30),
-            @floatFromInt(self.border),
-            @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad),
-            0,
-        );
-        try fade_pattern.addColorStopRgba(1, bg[2], bg[1], bg[0], bg[3]);
-        try fade_pattern.addColorStopRgba(0, fg[2], fg[1], fg[0], fg[3]);
-
-        context.setOperator(.source);
-
-        context.setSourceRgba(border_color[2], border_color[1], border_color[0], border_color[3]);
-        context.rectangle(
-            @floatFromInt(tab_start),
-            @floatFromInt(0),
-            @floatFromInt(tab_width + 1),
-            @floatFromInt(total_height),
-        );
-        context.fill();
-
-        context.setSourceRgba(bg[2], bg[1], bg[0], bg[3]);
-        context.rectangle(
-            @floatFromInt(self.border + tab_start),
-            @floatFromInt(self.border),
-            @floatFromInt(tab_width - self.border - self.border),
-            @floatFromInt(total_height - self.border),
-        );
-        context.fill();
-
-        context.moveTo(
-            @floatFromInt(tab_start + self.border + title_pad),
-            @floatFromInt(self.border + title_pad + @divTrunc(font.size - label_height, 2) - label_y_bearing),
-        );
-        context.setSource(&fade_pattern);
-        context.textPath(label);
-        context.fill();
-
-        context.moveTo(
-            @floatFromInt(tab_start + tab_width - title_pad - icon_width - self.border),
-            @floatFromInt(self.border + title_pad + @divTrunc(font.size - icon_height, 2) - icon_y_bearing),
-        );
-        context.textPath(icon);
-        context.setSourceRgba(fg[2], fg[1], fg[0], fg[3]);
-        context.fill();
+        try tab_client.tab.draw(self.session, &context, .{
+            .x = tab_start,
+            .y = 0,
+            .width = tab_width,
+            .height = tab_height,
+        });
 
         current_tab += 1;
+        // const tab_focus = tab_client == self;
+
+        // const label = tab_client.getLabel();
+        // const label_extents = context.textExtents(label.ptr);
+
+        // const label_y_bearing: i32 = @intFromFloat(label_extents.y_bearing);
+        // const label_height: i32 = @intFromFloat(label_extents.height);
+
+        // const icon = tab_client.icon orelse "?";
+        // const icon_extents = context.textExtents(icon.ptr);
+        // const icon_width: i32 = @intFromFloat(icon_extents.width);
+        // const icon_height: i32 = @intFromFloat(icon_extents.height);
+        // const icon_y_bearing: i32 = @intFromFloat(icon_extents.y_bearing);
+
+        // const fg = self.session.config.getColor(tab_focus, .foreground);
+        // const bg = self.session.config.getColor(tab_focus, .background);
+        // const border_color = self.session.config.getColor(tab_focus, .border);
+
+        // var fade_pattern = try cairo.Pattern.createLinear(
+        //     @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad - 30),
+        //     @floatFromInt(self.border),
+        //     @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad),
+        //     0,
+        // );
+        // try fade_pattern.addColorStopRgba(1, bg[2], bg[1], bg[0], bg[3]);
+        // try fade_pattern.addColorStopRgba(0, fg[2], fg[1], fg[0], fg[3]);
+
+        // context.setOperator(.source);
+
+        // context.setSourceRgba(border_color[2], border_color[1], border_color[0], border_color[3]);
+        // context.rectangle(
+        //     @floatFromInt(tab_start),
+        //     @floatFromInt(0),
+        //     @floatFromInt(tab_width + 1),
+        //     @floatFromInt(total_height),
+        // );
+        // context.fill();
+
+        // context.setSourceRgba(bg[2], bg[1], bg[0], bg[3]);
+        // context.rectangle(
+        //     @floatFromInt(self.border + tab_start),
+        //     @floatFromInt(self.border),
+        //     @floatFromInt(tab_width - self.border - self.border),
+        //     @floatFromInt(total_height - self.border),
+        // );
+        // context.fill();
+
+        // context.moveTo(
+        //     @floatFromInt(tab_start + self.border + title_pad),
+        //     @floatFromInt(self.border + title_pad + @divTrunc(font.size - label_height, 2) - label_y_bearing),
+        // );
+        // context.setSource(&fade_pattern);
+        // context.textPath(label);
+        // context.fill();
+
+        // context.moveTo(
+        //     @floatFromInt(tab_start + tab_width - title_pad - icon_width - self.border),
+        //     @floatFromInt(self.border + title_pad + @divTrunc(font.size - icon_height, 2) - icon_y_bearing),
+        // );
+        // context.textPath(icon);
+        // context.setSourceRgba(fg[2], fg[1], fg[0], fg[3]);
+        // context.fill();
+
     }
 
     self.frame.buffer_scene.setBuffer(&self.frame.title_buffer.base);
@@ -600,11 +604,11 @@ pub fn init(session: *Session, target: ClientSurface) !void {
 
                 const parent = @as(?*wlr.SceneTree, @ptrFromInt(surface.role_data.popup.?.parent.?.data)) orelse
                     if (objects.client) |client|
-                        client.popup_surface
-                    else if (objects.layer_surface) |layer_surface|
-                        layer_surface.scene_tree
-                    else
-                        unreachable;
+                    client.popup_surface
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.scene_tree
+                else
+                    unreachable;
 
                 const new_surface = try parent.createSceneXdgSurface(surface);
                 surface.surface.data = @intFromPtr(new_surface);
@@ -772,11 +776,12 @@ pub fn map(self: *Client) !void {
 
     self.setMonitor(self.session.focusedMonitor orelse
         self.session.monitors.first() orelse
-        return error.fdsa);
+        return error.MapToNothing);
 
     if (self.monitor) |m|
         m.dirty.layout = true;
 
+    self.dirty = .{};
     try self.cleanDirty();
 }
 
@@ -1127,12 +1132,13 @@ pub fn unmap(self: *Client) !void {
     if (self.monitor) |m| {
         m.dirty.tabs = true;
         m.dirty.layout = true;
+        m.dirty.focus = true;
     }
 
     try self.clearMonitor();
 
     if (self.frame.is_init) {
-        std.log.info("{}", .{self.frame.title_buffer.base.n_locks});
+        std.log.info("locks: {}", .{self.frame.title_buffer.base.n_locks});
         self.frame.title_buffer.base.unlock();
         self.frame.title_buffer.deinit();
 
@@ -1220,8 +1226,13 @@ pub fn notifyEnter(self: *Client, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
 }
 
 pub fn activateSurface(self: *Client, active: bool) void {
-    self.dirty.frame = true;
+    if (self.active == active)
+        return;
+
     self.active = active;
+
+    self.dirty.title = true;
+    self.dirty.frame = true;
 
     switch (self.surface) {
         .X11 => |surface| surface.activate(active),

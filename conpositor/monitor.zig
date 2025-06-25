@@ -41,6 +41,7 @@ dirty: packed struct {
     layout: bool = false,
     force_layout: bool = false,
     tabs: bool = false,
+    focus: bool = false,
 } = .{},
 
 const Listeners = struct {
@@ -176,6 +177,11 @@ pub fn frame(self: *Monitor) !void {
     if (self.dirty.tabs)
         try self.updateTabs();
 
+    if (self.dirty.focus) {
+        try self.session.input.motionNotify(0);
+        self.dirty.focus = false;
+    }
+
     var iter = self.session.clients.iterator(.forward);
     while (iter.next()) |client| {
         if (client.monitor == self)
@@ -250,6 +256,9 @@ pub fn clientVisible(self: *Monitor, client: *Client) bool {
 
 pub fn focusedClient(self: *Monitor) ?*Client {
     var iter = self.session.focus_clients.iterator(.forward);
+
+    if (self.session.input.seat.keyboard_state.focused_surface == null)
+        return null;
 
     return focused: while (iter.next()) |client| {
         if (self.clientVisible(client))
