@@ -712,24 +712,25 @@ pub fn focusClient(self: *Session, client: *Client, lift: bool) !void {
     if (client.getSurface() == old_focus)
         return;
 
-    if (client.managed) {
-        client.focus_link.remove();
-        self.focus_clients.prepend(client);
-        if (client.surface == .X11)
-            client.surface.X11.restack(null, .above);
-
-        client.dirty.frame = true;
-        client.dirty.title = true;
-    }
+    const old_client: ?*Client = self.focusedClient();
+    if (old_client) |old|
+        old.activateSurface(false);
 
     if (old_focus != null and (client.getSurface() != old_focus)) {
         if (old_focus.? == self.exclusive_focus)
             return;
     }
 
-    const old_client: ?*Client = self.focusedClient();
-    if (old_client) |old| {
-        old.activateSurface(false);
+    if (client.managed) {
+        client.focus_link.remove();
+        self.focus_clients.prepend(client);
+        if (client.surface == .X11)
+            client.surface.X11.restack(null, .above);
+    }
+
+    if (old_focus != null and (client.getSurface() != old_focus)) {
+        if (old_focus.? == self.exclusive_focus)
+            return;
     }
 
     try self.input.motionNotify(0);
@@ -743,13 +744,14 @@ pub fn focusClear(self: *Session) void {
     if (input.locked)
         return;
 
-    const old_client: ?*Client = self.focusedClient();
-    if (old_client) |old_focus_client| {
-        old_focus_client.dirty.frame = true;
-        old_focus_client.dirty.title = true;
+    const old_focus = input.seat.keyboard_state.focused_surface;
 
+    if (old_focus != null and old_focus.? == self.exclusive_focus)
+        return;
+
+    const old_client: ?*Client = self.focusedClient();
+    if (old_client) |old_focus_client|
         old_focus_client.activateSurface(false);
-    }
 
     self.input.seat.keyboardNotifyClearFocus();
 }

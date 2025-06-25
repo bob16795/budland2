@@ -129,40 +129,39 @@ const LuaFilter = struct {
 
 pub const LuaClosure = struct {
     ref: i32,
+    upvs: []i32,
     lua: *Lua,
 
     pub fn deinit(self: LuaClosure) void {
         self.lua.unref(zlua.registry_index, self.ref);
+        std.log.info("unref: {}", .{self.ref});
     }
 
     pub fn toLua(self: LuaClosure, lua: *Lua) void {
         _ = lua.rawGetIndex(zlua.registry_index, self.ref);
-        _ = lua.rawGetIndex(-1, 1);
-        lua.remove(-2);
     }
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaClosure {
         if (!lua.isFunction(index)) return error.LuaError;
+
         lua.pushValue(index); // func
-        lua.newTable(); // func table
-        lua.pushValue(-2); // func table func
-        lua.rawSetIndex(-2, 1); // func table
+        const r = try lua.ref(zlua.registry_index);
 
         var info: zlua.DebugInfo = undefined;
-        lua.pushValue(-2); // func table func
-        lua.getInfo(.{ .@">" = true, .u = true }, &info); // func table
+        lua.pushValue(index); // func
+        lua.getInfo(.{ .@">" = true, .u = true }, &info);
+        // lua.pop(1);
 
+        const upvs = try allocator.alloc(i32, info.num_upvalues);
         for (1..info.num_upvalues + 1) |v| {
-            _ = try lua.getUpvalue(-2, @intCast(v)); // func table upv
-            lua.rawSetIndex(-2, @intCast(v + 1)); // func table
+            _ = try lua.getUpvalue(index, @intCast(v)); // func table upv
+            upvs[v - 1] = try lua.ref(zlua.registry_index);
         }
-
-        const r = try lua.ref(zlua.registry_index); // func
-        lua.pop(1);
 
         return .{
             .lua = lua,
             .ref = r,
+            .upvs = upvs,
         };
     }
 };
@@ -246,6 +245,60 @@ pub const LuaVec = struct {
         lua.setField(-2, "x");
         lua.pushNumber(self.y);
         lua.setField(-2, "y");
+    }
+};
+
+pub const LuaModule = struct {
+    calls: LuaClosure,
+    lua: *Lua,
+
+    pub fn getText(self: *LuaModule, client: *Client) ![:0]const u8 {
+        const lua = self.lua;
+
+        const old_top = lua.getTop();
+
+        try lua.pushAny(self.calls);
+        try lua.pushAny(LuaClient{ .child = client });
+        lua.protectedCall(.{ .args = 1, .results = 1 }) catch |err| {
+            std.log.err("{s} Error: {s}", .{ @errorName(err), self.lua.toString(-1) catch "unknown" });
+            self.lua.pop(1);
+
+            return try allocator.dupeZ(u8, "Err");
+        };
+
+        const lua_result: []const u8 = lua.toString(-1) catch "";
+        const result = try allocator.dupeZ(u8, lua_result);
+        lua.pop(1);
+
+        if (old_top != lua.getTop())
+            return error.LuaError;
+
+        return result;
+    }
+
+    pub fn deinit(self: *LuaModule) void {
+        self.calls.deinit();
+    }
+
+    pub fn lua_new(text: LuaClosure) LuaModule {
+        std.log.info("new module {}", .{text.ref});
+
+        return .{
+            .calls = text,
+            .lua = text.lua,
+        };
+    }
+
+    pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaModule {
+        const result = try lua.toUserdata(LuaModule, index);
+        return result.*;
+    }
+
+    pub fn toLua(self: LuaModule, lua: *Lua) !void {
+        const tmp = lua.newUserdata(LuaModule, 1);
+        tmp.* = self;
+
+        lua.setMetatableRegistry("Module");
     }
 };
 
@@ -427,8 +480,64 @@ const LuaClient = struct {
         return self.child.getAppId();
     }
 
+    pub fn luaraw_set_modules(lua: *Lua) !i32 {
+        const old_top = lua.getTop();
+
+        const self: *LuaClient = try lua.toAny(*LuaClient, -2);
+
+        self.child.tab.left_modules.clearRetainingCapacity();
+
+        _ = lua.getField(-1, "left");
+        const left_len = lua.rawLen(-1);
+
+        for (1..left_len + 1) |idx| {
+            _ = try lua.pushAny(idx);
+            _ = lua.getTable(-2);
+            defer lua.pop(1);
+
+            try self.child.tab.left_modules.append(try lua.toAny(LuaModule, -1));
+        }
+
+        lua.pop(1);
+
+        _ = lua.getField(-1, "center");
+        const center_len = lua.rawLen(-1);
+
+        for (1..center_len + 1) |idx| {
+            _ = try lua.pushAny(idx);
+            _ = lua.getTable(-2);
+            defer lua.pop(1);
+
+            try self.child.tab.center_modules.append(try lua.toAny(LuaModule, -1));
+        }
+
+        lua.pop(1);
+
+        _ = lua.getField(-1, "right");
+        const right_len = lua.rawLen(-1);
+
+        for (1..right_len + 1) |idx| {
+            _ = try lua.pushAny(idx);
+            _ = lua.getTable(-2);
+            defer lua.pop(1);
+
+            try self.child.tab.right_modules.append(try lua.toAny(LuaModule, -1));
+        }
+
+        lua.pop(1);
+
+        if (old_top != lua.getTop() + 0)
+            return error.LuaError;
+
+        return 0;
+    }
+
     pub fn lua_get_title(self: *LuaClient) ?[:0]const u8 {
         return self.child.getTitle();
+    }
+
+    pub fn lua_get_icon(self: *LuaClient) ?[:0]const u8 {
+        return self.child.icon;
     }
 
     pub fn lua_set_tag(self: *LuaClient, tag: *LuaTag) void {
@@ -538,14 +647,14 @@ pub fn cleanupChild() void {
 }
 
 pub fn lua_spawn(_: *Config, name: [:0]const u8, args: [][*:0]const u8) !void {
+    const child_name = try allocator.dupeZ(u8, name);
+    const child_args: [:null]?[*:0]const u8 = (try std.mem.concatWithSentinel(allocator, ?[*:0]const u8, &.{ &.{child_name}, args, &.{null} }, null));
+
     const pid = std.posix.fork() catch {
         return error.Other;
     };
 
     if (pid == 0) {
-        const child_args: [:null]?[*:0]const u8 = (try std.mem.concatWithSentinel(allocator, ?[*:0]const u8, &.{ &.{name}, args }, null));
-        const child_name = try allocator.dupeZ(u8, name);
-
         for (child_args) |arg|
             std.log.info("run {?s}", .{arg});
 
@@ -554,9 +663,6 @@ pub fn lua_spawn(_: *Config, name: [:0]const u8, args: [][*:0]const u8) !void {
         const pid2 = std.posix.fork() catch c._exit(1);
         if (pid2 == 0) {
             std.posix.execvpeZ(child_name, child_args, std.c.environ) catch c._exit(1);
-
-            allocator.free(child_args);
-            allocator.free(child_name);
         }
 
         c._exit(0);
@@ -690,6 +796,8 @@ pub fn lua_is_debug() bool {
 }
 
 pub fn luaraw_add_hook(lua: *Lua) !i32 {
+    const old_top = lua.getTop();
+
     const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
     const event_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
     const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
@@ -702,10 +810,15 @@ pub fn luaraw_add_hook(lua: *Lua) !i32 {
         .calls = calls,
     });
 
+    if (old_top != lua.getTop() + 0)
+        return error.LuaError;
+
     return 0;
 }
 
 pub fn luaraw_add_rule(lua: *Lua) !i32 {
+    const old_top = lua.getTop();
+
     const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
     const filter = lua.toAny(LuaFilter, -2) catch lua.raiseErrorStr("Not a lua filter", .{});
     const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
@@ -716,10 +829,15 @@ pub fn luaraw_add_rule(lua: *Lua) !i32 {
         .calls = calls,
     });
 
+    if (old_top != lua.getTop() + 0)
+        return error.LuaError;
+
     return 0;
 }
 
 pub fn luaraw_add_mouse(lua: *Lua) !i32 {
+    const old_top = lua.getTop();
+
     const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
     const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Mods not a string", .{});
     const key_name = lua.toString(-2) catch lua.raiseErrorStr("Button not a string", .{});
@@ -755,10 +873,15 @@ pub fn luaraw_add_mouse(lua: *Lua) !i32 {
 
     std.log.info("set mouse bind {}", .{key});
 
+    if (old_top != lua.getTop() + 0)
+        return error.LuaError;
+
     return 0;
 }
 
 pub fn luaraw_add_bind(lua: *Lua) !i32 {
+    const old_top = lua.getTop();
+
     const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
     const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Not a string", .{});
     const key_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
@@ -788,6 +911,9 @@ pub fn luaraw_add_bind(lua: *Lua) !i32 {
 
         std.log.info("create bind {}", .{key});
     }
+
+    if (old_top != lua.getTop() + 0)
+        return error.LuaError;
 
     return 0;
 }
@@ -914,7 +1040,7 @@ pub fn setupLua(self: *Config) ConfigError!void {
 
     std.log.info("LUA_PATH: {s}", .{path});
 
-    self.lua = try Lua.init(allocator);
+    self.lua = try Lua.init(std.heap.c_allocator);
     const lua = self.lua;
 
     lua.openLibs();
@@ -933,6 +1059,7 @@ pub fn setupLua(self: *Config) ConfigError!void {
     try globalType(self.lua, LuaStack, "Stack");
     try globalType(self.lua, LuaTag, "Tag");
     try globalType(self.lua, LuaFilter, "Filter");
+    try globalType(self.lua, LuaModule, "Module");
 
     try lua.pushAny(self);
     lua.setMetatableRegistry("Session");
