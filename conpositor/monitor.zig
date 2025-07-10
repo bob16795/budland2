@@ -255,6 +255,14 @@ pub fn clientVisible(self: *Monitor, client: *Client) bool {
 }
 
 pub fn focusedClient(self: *Monitor) ?*Client {
+    {
+        var iter = self.session.focus_clients.iterator(.forward);
+        while (iter.next()) |client| {
+            if (self.clientVisible(client) and client.fullscreen)
+                return client;
+        }
+    }
+
     var iter = self.session.focus_clients.iterator(.forward);
 
     if (self.session.input.seat.keyboard_state.focused_surface == null)
@@ -297,7 +305,6 @@ fn updateLayout(self: *Monitor) !void {
                     usage[client.container] = true;
                 } else {
                     client.hide_frame = false;
-                    client.setFrame(.title);
                 }
             }
         }
@@ -316,8 +323,6 @@ fn updateLayout(self: *Monitor) !void {
             const visible = self.clientVisible(client);
 
             if (visible) {
-                const border = if (client.frame.kind == .hide) 0 else client.border;
-
                 const new_size = if (self.layout) |layout|
                     layout.getSize(
                         client.container,
@@ -334,12 +339,7 @@ fn updateLayout(self: *Monitor) !void {
                         .height = self.window.height - 2 * (self.gaps_outer + self.gaps_inner),
                     };
 
-                if (border != 0) {
-                    client.setFrame(if (new_size.y == self.window.y)
-                        .border
-                    else
-                        .title);
-                }
+                client.setContainerTitle(new_size.y != self.window.y);
 
                 if (resize or client.dirty.container or self.dirty.force_layout)
                     client.setContainerSize(new_size);
