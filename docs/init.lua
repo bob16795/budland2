@@ -52,12 +52,12 @@ local function setup_abcd(root_container, ab_split, in_ac_split, in_bd_split, fl
     end
 end
 
-local default_layout = session:add_layout("+>+")
-local center_layout = session:add_layout("+|+")
-local lefty_layout = session:add_layout("+<+")
-local default_layout_b = session:add_layout("->-")
-local center_layout_b = session:add_layout("-|-")
-local lefty_layout_b = session:add_layout("-<-")
+local default_layout = session:add_layout("] > [")
+local center_layout = session:add_layout("] | [")
+local lefty_layout = session:add_layout("] < [")
+local default_layout_b = session:add_layout("[ > ]")
+local center_layout_b = session:add_layout("[ | ]")
+local lefty_layout_b = session:add_layout("[ < ]")
 
 setup_abcd(default_layout:root(), 0.7, 0.2, 0.4, false)
 setup_abcd(center_layout:root(), 0.5, 0.2, 0.4, false)
@@ -77,27 +77,6 @@ local flip_cycle = {
     { center_layout,  center_layout_b }, -- center
     { default_layout, default_layout_b } -- default
 }
-
--- functions for debugging
-function debug_icon()
-    local client = session:active_client()
-    if client then
-        local old_label = client:get_label() or "No label"
-        if old_label:sub(1, 1) == "[" then
-            local new = old_label:sub(2)
-            new = new:sub(1, string.find(new, "]") - 1)
-
-            if new == "No label" then
-                client:set_label(nil)
-            else
-                client:set_label(new)
-            end
-        else
-            client:set_label(
-                "[" .. old_label .. "] title: '" .. client:get_title() .. "' appid: '" .. client:get_appid() .. "'")
-        end
-    end
-end
 
 -- mouse functions
 local mouse_client = nil
@@ -194,6 +173,7 @@ session:add_bind(super .. "S", "Tab", funcs.cycle_focus(-1))
 session:add_bind(super, "Space", funcs.toggle_floating())
 session:add_bind(super .. "S", "Escape", funcs.quit())
 session:add_bind(super, "Q", funcs.kill_client())
+session:add_bind(super, "F", funcs.toggle_fullscreen())
 
 -- tags
 for idx, tag in pairs(tags) do
@@ -207,20 +187,66 @@ for name, stack in pairs(stacks) do
 end
 
 -- debug tools
-session:add_bind(super .. "S", "L", debug_icon)
 
 session:add_bind(super, "P", funcs.reload())
 session:add_bind(super, "G", gaps.increase)
 session:add_bind(super .. "S", "G", gaps.decrease)
 session:add_bind(super .. "S", "V", gaps.toggle)
 
+-- title modules
 local icon_module = Module.new(function(client)
-    return client:get_icon() or "?"
+    return client:get_icon() or ""
 end)
 
 local title_module = Module.new(function(client)
-    return client:get_label() or client:get_title() or "?"
+    return client:get_label() or client:get_title() or ""
 end)
+
+local debug_module = Module.new(function(client)
+    local label = client:get_label() or "(none)"
+    local title = client:get_title() or "(none)"
+    local appid = client:get_appid() or "(none)"
+    return "[" .. label .. "] title: '" .. title .. "' appid: '" .. appid .. "'"
+end)
+
+local default_modules = {
+    left = {},
+    center = { icon_module, title_module },
+    right = {}
+}
+
+local debug_modules = {
+    left = { icon_module },
+    center = { debug_module },
+    right = { title_module }
+}
+
+local function debug_window_set(value)
+    if value then
+        return function()
+            local client = session:active_client()
+            if client then
+                client:set_modules(debug_modules)
+            end
+        end
+    else
+        return function()
+            local client = session:active_client()
+            if client then
+                client:set_modules(default_modules)
+            end
+        end
+    end
+end
+
+-- default modules
+session:add_rule({}, function(client)
+    client:set_modules(default_modules)
+end)
+
+-- module switch bind
+session:add_bind(super .. "S", "L", debug_window_set(false))
+session:add_bind(super, "L", debug_window_set(true))
 
 -- default rule
 session:add_rule({}, function(client)
@@ -228,11 +254,6 @@ session:add_rule({}, function(client)
     client:set_floating(true)
     client:set_icon("?")
     client:set_border(3)
-    client:set_modules({
-        left = { icon_module },
-        center = { title_module },
-        right = { icon_module }
-    })
 end)
 
 local client_rule = function(filter, rule)
@@ -269,6 +290,7 @@ client_rule({ appid = "Sxiv" }, { stack = stacks.b, icon = "", title = "Image
 client_rule({ appid = "imv" }, { stack = stacks.b, icon = "", title = "Image" })
 client_rule({ appid = "Chromium" }, { stack = stacks.c, icon = "" })
 client_rule({ appid = "vivaldi-stable" }, { stack = stacks.c, icon = "" })
+client_rule({ appid = "gimp" }, { stack = stacks.c, icon = "" })
 client_rule({ appid = "pavucontrol" }, { stack = stacks.b, icon = "", title = "Volume" })
 client_rule({ appid = "neovide" }, { stack = stacks.c, icon = "" })
 client_rule({ appid = "PrestoEdit" }, { stack = stacks.c, icon = "" })
