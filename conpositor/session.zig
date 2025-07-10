@@ -274,9 +274,9 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 
         ok = ok and
             if (is_test)
-                wlr_output.testState(&state)
-            else
-                wlr_output.commitState(&state);
+            wlr_output.testState(&state)
+        else
+            wlr_output.commitState(&state);
 
         std.log.info("move monitor {*}, {} {}", .{ monitor, monitor.mode, monitor.window });
     }
@@ -624,6 +624,7 @@ pub fn updateMons(self: *Session) !void {
             try monitor.arrangeLayers();
 
             // TODO: update fullscreen client
+            monitor.fullscreen_bg.node.setPosition(monitor.mode.x, monitor.mode.y);
 
             config_head.state.enabled = true;
             config_head.state.mode = monitor.output.current_mode;

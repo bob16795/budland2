@@ -460,6 +460,14 @@ const LuaClient = struct {
         });
     }
 
+    pub fn lua_get_fullscreen(self: *LuaClient) bool {
+        return self.child.fullscreen;
+    }
+
+    pub fn lua_set_fullscreen(self: *LuaClient, fullscreen: bool) void {
+        self.child.setFullscreen(fullscreen);
+    }
+
     pub fn lua_set_border(self: *LuaClient, border: i32) void {
         self.child.setBorder(border);
     }
@@ -486,6 +494,9 @@ const LuaClient = struct {
         const self: *LuaClient = try lua.toAny(*LuaClient, -2);
 
         self.child.tab.left_modules.clearRetainingCapacity();
+        self.child.tab.center_modules.clearRetainingCapacity();
+        self.child.tab.right_modules.clearRetainingCapacity();
+        self.child.dirty.title = true;
 
         _ = lua.getField(-1, "left");
         const left_len = lua.rawLen(-1);

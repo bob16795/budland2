@@ -25,7 +25,7 @@ function M.set_client_border(size)
     end
 end
 
-function M.toggle_floating(size)
+function M.toggle_floating()
     return function()
         local client = session:active_client()
         if client then
@@ -34,7 +34,16 @@ function M.toggle_floating(size)
     end
 end
 
-function M.kill_client(tag)
+function M.toggle_fullscreen()
+    return function()
+        local client = session:active_client()
+        if client then
+          client:set_fullscreen(not client:get_fullscreen())
+        end
+    end
+end
+
+function M.kill_client()
     return function()
         local client = session:active_client()
         if client then

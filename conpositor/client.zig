@@ -19,7 +19,6 @@ const SurfaceKind = enum { XDG, X11 };
 const FrameKind = enum { hide, border, title };
 
 const ClientFrame = struct {
-    kind: FrameKind = .hide,
     is_init: bool = false,
 
     title_buffer: *CairoBuffer = undefined,
@@ -30,7 +29,7 @@ const ClientFrame = struct {
     sides: [4]*wlr.SceneRect = undefined,
     buffer_scene: *wlr.SceneBuffer = undefined,
 
-    pub fn init(kind: FrameKind, color: *const [4]f32, client: *Client) !ClientFrame {
+    pub fn init(color: *const [4]f32, client: *Client) !ClientFrame {
         const shadow_scene = client.session.layers.get(.LyrFloatShadows);
 
         var shadow_tree = try shadow_scene.createSceneTree();
@@ -51,14 +50,13 @@ const ClientFrame = struct {
             side.*.node.data = @intFromPtr(client);
         }
 
-        const title_buffer = try CairoBuffer.create(allocator, 0, 0, 1.0);
+        const title_buffer = try CairoBuffer.create(allocator, 1, 1, 1.0);
         const locked = title_buffer.base.lock();
 
         shadow_tree.node.setEnabled(false);
 
         return .{
             .is_init = true,
-            .kind = kind,
             .sides = sides,
             .shadow = shadow,
             .title_buffer = title_buffer,
@@ -207,7 +205,7 @@ const ClientEvents = struct {
         const events: *ClientEvents = @fieldParentPtr("fullscreen_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
-        client.setFullscreen(true);
+        client.setFullscreen(!client.fullscreen);
     }
 };
 
@@ -232,6 +230,7 @@ frame: ClientFrame = .{},
 visible: bool = true,
 hide_frame: bool = false,
 active: bool = false,
+container_title: bool = false,
 
 resize_serial: ?u32 = null,
 
@@ -245,6 +244,7 @@ dirty: packed struct {
     title: bool = true,
     visible: bool = true,
     container: bool = true,
+    fullscreen: bool = true,
     top: bool = true,
 } = .{},
 
@@ -259,6 +259,10 @@ tab: Tab = .{},
 const SHADOW_SIZE = 10;
 
 pub fn getBounds(self: *Client) wlr.Box {
+    if (self.fullscreen)
+        if (self.monitor) |m|
+            return m.mode;
+
     if (self.floating)
         return self.floating_bounds
     else
@@ -269,7 +273,7 @@ pub fn getInnerBounds(self: *Client) wlr.Box {
     const title_height = self.session.config.getTitleHeight();
     const bounds = self.getBounds();
 
-    return switch (self.frame.kind) {
+    return switch (self.getFrameKind()) {
         .hide => .{
             .x = 0,
             .y = 0,
@@ -352,7 +356,7 @@ fn updateSize(self: *Client) !void {
     self.frame.sides[2].node.setPosition(0, 0);
     self.frame.sides[3].node.setPosition(inner_bounds.width + inner_bounds.x, 0);
 
-    if (self.frame.kind == .title) {
+    if (self.getFrameKind() == .title) {
         const title_height = self.session.config.getTitleHeight();
         const total_width: i32 = bounds.width;
         const total_height: i32 = title_height + self.border * 2;
@@ -378,8 +382,8 @@ fn updateFrame(self: *Client) !void {
 
     for (self.frame.shadow) |shadow|
         shadow.node.setEnabled(!self.hide_frame);
-    self.frame.border_tree.node.setEnabled(self.frame.kind == .title or self.frame.kind == .border);
-    self.frame.buffer_scene.node.setEnabled(self.frame.kind == .title);
+    self.frame.border_tree.node.setEnabled(self.getFrameKind() == .title or self.getFrameKind() == .border);
+    self.frame.buffer_scene.node.setEnabled(self.getFrameKind() == .title);
 
     const active = self == self.session.focusedClient();
 
@@ -393,7 +397,7 @@ fn updateTabs(self: *Client) !void {
     if (self.dirty.frame)
         try self.updateFrame();
 
-    if (self.frame.kind != .title)
+    if (self.getFrameKind() != .title)
         return;
 
     const bounds = self.getBounds();
@@ -532,7 +536,7 @@ fn updateTitles(self: *Client) !void {
             try client.updateTabs();
 }
 
-pub fn updateVisible(self: *Client) !void {
+fn updateVisible(self: *Client) !void {
     if (self.dirty.container) {
         if (self.monitor) |m|
             m.dirty.layout = true;
@@ -546,7 +550,10 @@ pub fn updateVisible(self: *Client) !void {
     self.frame.shadow_tree.node.setEnabled(self.visible and self.managed);
 }
 
-pub fn updateFloating(self: *Client) !void {
+fn updateFloating(self: *Client) !void {
+    if (self.fullscreen)
+        return;
+
     std.log.info("update floating", .{});
     defer self.dirty.floating = false;
 
@@ -559,7 +566,28 @@ pub fn updateFloating(self: *Client) !void {
     try self.updateSize();
 }
 
-pub fn updateTop(self: *Client) !void {
+fn updateFullscreen(self: *Client) !void {
+    // const mon = self.monitor orelse
+    //     return;
+
+    defer self.dirty.fullscreen = false;
+
+    const layer: Session.Layer = if (self.fullscreen)
+        .LyrFS
+    else if (self.floating)
+        .LyrFloat
+    else
+        .LyrTile;
+    self.scene.node.reparent(self.session.layers.get(layer));
+    self.frame.shadow_tree.node.setEnabled(!self.fullscreen);
+
+    switch (self.surface) {
+        .XDG => |surf| _ = surf.role_data.toplevel.?.setFullscreen(self.fullscreen),
+        .X11 => |surf| surf.setFullscreen(self.fullscreen),
+    }
+}
+
+fn updateTop(self: *Client) !void {
     std.log.info("update top", .{});
     defer self.dirty.top = false;
 
@@ -578,6 +606,9 @@ pub fn cleanDirty(self: *Client) !void {
 
     if (self.dirty.floating)
         try self.updateFloating();
+
+    if (self.dirty.fullscreen)
+        try self.updateFullscreen();
 
     if (self.dirty.frame)
         try self.updateFrame();
@@ -692,17 +723,17 @@ pub fn init(session: *Session, target: ClientSurface) !void {
     }
 }
 
-pub fn associate(self: *Client) !void {
+fn associate(self: *Client) !void {
     self.getSurface().events.map.add(&self.events.map_event);
     self.getSurface().events.unmap.add(&self.events.unmap_event);
 }
 
-pub fn dissociate(self: *Client) !void {
+fn dissociate(self: *Client) !void {
     self.events.map_event.link.remove();
     self.events.unmap_event.link.remove();
 }
 
-pub fn setHints(self: *Client) !void {
+fn setHints(self: *Client) !void {
     // const surface = self.getSurface();
     const monitor = self.monitor orelse return;
     if (self == monitor.focusedClient())
@@ -711,7 +742,7 @@ pub fn setHints(self: *Client) !void {
     // self.setUrgent()
 }
 
-pub fn map(self: *Client) !void {
+fn map(self: *Client) !void {
     std.log.info("map client {*}", .{self});
 
     self.scene = try self.session.layers.get(.LyrTile).createSceneTree();
@@ -746,10 +777,7 @@ pub fn map(self: *Client) !void {
         },
     }
 
-    self.frame = try .init(if (self.managed)
-        if (self.floating) .title else .border
-    else
-        .hide, self.session.config.getColor(false, .border), self);
+    self.frame = try .init(self.session.config.getColor(false, .border), self);
 
     self.popup_surface.node.raiseToTop();
 
@@ -788,7 +816,6 @@ pub fn map(self: *Client) !void {
 pub fn applyRules(self: *Client) !void {
     self.setBorder(0);
     self.setFloating(true);
-    self.setIcon("?");
     try self.session.config.applyRules(self);
 }
 
@@ -817,21 +844,21 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     var result = bounds;
 
     const title_height = self.session.config.getTitleHeight();
-    const x_start = if (self.frame.kind == .hide)
+    const x_start = if (self.getFrameKind() == .hide)
         0
     else
         self.border;
-    const x_border = x_start + if (self.frame.kind == .hide)
+    const x_border = x_start + if (self.getFrameKind() == .hide)
         0
     else
         self.border;
-    const y_start = if (self.frame.kind == .hide)
+    const y_start = if (self.getFrameKind() == .hide)
         0
-    else if (self.frame.kind == .border)
+    else if (self.getFrameKind() == .border)
         self.border
     else
         self.border + title_height + self.border;
-    const y_border = y_start + if (self.frame.kind == .hide)
+    const y_border = y_start + if (self.getFrameKind() == .hide)
         0
     else
         self.border;
@@ -978,15 +1005,11 @@ pub inline fn setContainer(self: *Client, container: u8) void {
     }
 }
 
-pub inline fn setFrame(self: *Client, frame: FrameKind) void {
-    if (self.frame.kind == frame)
+pub inline fn setContainerTitle(self: *Client, title: bool) void {
+    if (self.container_title == title)
         return;
 
-    if (self.managed)
-        self.frame.kind = frame
-    else
-        self.frame.kind = .hide;
-
+    self.container_title = title;
     self.dirty.frame = true;
 }
 
@@ -1033,10 +1056,16 @@ pub inline fn setTag(self: *Client, tag: u8) void {
 }
 
 pub inline fn setFullscreen(self: *Client, fullscreen: bool) void {
-    _ = self;
-    _ = fullscreen;
+    if (self.fullscreen == fullscreen)
+        return;
 
-    return;
+    self.fullscreen = fullscreen;
+    self.dirty.fullscreen = true;
+    self.dirty.frame = true;
+    self.dirty.size = true;
+
+    if (self.monitor) |m|
+        m.dirty.layout = true;
 }
 
 pub inline fn setFloating(self: *Client, floating: bool) void {
@@ -1051,15 +1080,13 @@ pub inline fn setFloating(self: *Client, floating: bool) void {
 
     self.floating = floating;
     self.dirty.floating = true;
+    self.dirty.frame = true;
 
     if (self.monitor) |m|
         m.dirty.layout = true;
 
     if (!self.frame.is_init)
         return;
-
-    if (self.floating)
-        self.setFrame(.title);
 }
 
 pub fn updateSizeSerial(self: *Client) ?u32 {
@@ -1282,6 +1309,25 @@ pub fn setMonitor(self: *Client, target_monitor: *Monitor) void {
     self.setFullscreen(self.fullscreen);
 
     target_monitor.dirty.layout = true;
+}
+
+pub fn getFrameKind(self: *Client) FrameKind {
+    if (!self.managed or !self.frame.is_init)
+        return .hide;
+
+    if (self.fullscreen)
+        return .hide;
+
+    if (self.floating)
+        return .title;
+
+    if (self.container_title)
+        return .title;
+
+    if (self.border == 0)
+        return .hide;
+
+    return .border;
 }
 
 pub fn clearMonitor(self: *Client) !void {
