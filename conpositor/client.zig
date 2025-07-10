@@ -449,69 +449,6 @@ fn updateTabs(self: *Client) !void {
         });
 
         current_tab += 1;
-        // const tab_focus = tab_client == self;
-
-        // const label = tab_client.getLabel();
-        // const label_extents = context.textExtents(label.ptr);
-
-        // const label_y_bearing: i32 = @intFromFloat(label_extents.y_bearing);
-        // const label_height: i32 = @intFromFloat(label_extents.height);
-
-        // const icon = tab_client.icon orelse "?";
-        // const icon_extents = context.textExtents(icon.ptr);
-        // const icon_width: i32 = @intFromFloat(icon_extents.width);
-        // const icon_height: i32 = @intFromFloat(icon_extents.height);
-        // const icon_y_bearing: i32 = @intFromFloat(icon_extents.y_bearing);
-
-        // const fg = self.session.config.getColor(tab_focus, .foreground);
-        // const bg = self.session.config.getColor(tab_focus, .background);
-        // const border_color = self.session.config.getColor(tab_focus, .border);
-
-        // var fade_pattern = try cairo.Pattern.createLinear(
-        //     @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad - 30),
-        //     @floatFromInt(self.border),
-        //     @floatFromInt(self.border + tab_start + tab_width - icon_width - title_pad),
-        //     0,
-        // );
-        // try fade_pattern.addColorStopRgba(1, bg[2], bg[1], bg[0], bg[3]);
-        // try fade_pattern.addColorStopRgba(0, fg[2], fg[1], fg[0], fg[3]);
-
-        // context.setOperator(.source);
-
-        // context.setSourceRgba(border_color[2], border_color[1], border_color[0], border_color[3]);
-        // context.rectangle(
-        //     @floatFromInt(tab_start),
-        //     @floatFromInt(0),
-        //     @floatFromInt(tab_width + 1),
-        //     @floatFromInt(total_height),
-        // );
-        // context.fill();
-
-        // context.setSourceRgba(bg[2], bg[1], bg[0], bg[3]);
-        // context.rectangle(
-        //     @floatFromInt(self.border + tab_start),
-        //     @floatFromInt(self.border),
-        //     @floatFromInt(tab_width - self.border - self.border),
-        //     @floatFromInt(total_height - self.border),
-        // );
-        // context.fill();
-
-        // context.moveTo(
-        //     @floatFromInt(tab_start + self.border + title_pad),
-        //     @floatFromInt(self.border + title_pad + @divTrunc(font.size - label_height, 2) - label_y_bearing),
-        // );
-        // context.setSource(&fade_pattern);
-        // context.textPath(label);
-        // context.fill();
-
-        // context.moveTo(
-        //     @floatFromInt(tab_start + tab_width - title_pad - icon_width - self.border),
-        //     @floatFromInt(self.border + title_pad + @divTrunc(font.size - icon_height, 2) - icon_y_bearing),
-        // );
-        // context.textPath(icon);
-        // context.setSourceRgba(fg[2], fg[1], fg[0], fg[3]);
-        // context.fill();
-
     }
 
     self.frame.buffer_scene.setBuffer(&self.frame.title_buffer.base);
@@ -567,9 +504,6 @@ fn updateFloating(self: *Client) !void {
 }
 
 fn updateFullscreen(self: *Client) !void {
-    // const mon = self.monitor orelse
-    //     return;
-
     defer self.dirty.fullscreen = false;
 
     const layer: Session.Layer = if (self.fullscreen)

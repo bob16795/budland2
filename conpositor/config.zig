@@ -150,7 +150,6 @@ pub const LuaClosure = struct {
         var info: zlua.DebugInfo = undefined;
         lua.pushValue(index); // func
         lua.getInfo(.{ .@">" = true, .u = true }, &info);
-        // lua.pop(1);
 
         const upvs = try allocator.alloc(i32, info.num_upvalues);
         for (1..info.num_upvalues + 1) |v| {
@@ -620,19 +619,6 @@ const LuaStack = struct {
         lua.setMetatableRegistry("Stack");
     }
 };
-
-// pub fn spawnThread(argv: [][]const u8) void {
-//     defer allocator.free(argv);
-//     std.posix.execve();
-
-//     // const result = std.process.Child.run(.{
-//     //     .allocator = allocator,
-//     //     .argv = argv,
-//     //     .env_map = &env,
-//     // }) catch return;
-//     // allocator.free(result.stdout);
-//     // allocator.free(result.stderr);
-// }
 
 var original_rlimit: ?std.posix.rlimit = null;
 

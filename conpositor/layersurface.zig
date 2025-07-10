@@ -114,7 +114,6 @@ pub fn create(session: *Session, surf: *wlr.LayerSurfaceV1) !void {
 }
 
 pub fn map(self: *LayerSurface) !void {
-    // self.surface.surface.sendEnter(self.monitor.output);
     try self.session.input.motionNotify(0);
 }
 

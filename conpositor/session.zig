@@ -422,7 +422,7 @@ const logger = struct {
 };
 
 pub fn init() SessionError!Session {
-    // wlr.log.init(.debug, &logger.log);
+    wlr.log.init(.debug, &logger.log);
 
     const wl_server = try wl.Server.create();
     const loop = wl_server.getEventLoop();
@@ -846,9 +846,6 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
 }
 
 pub fn reloadColors(self: *Session) !void {
-    // var iter = self.monitors.iterator(.forward);
-    // while (iter.next()) |monitor|
-    //     try monitor.arrangeLayers();
     var iter = self.clients.iterator(.forward);
     while (iter.next()) |client|
         client.dirty.frame = true;

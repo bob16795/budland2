@@ -70,7 +70,6 @@ pub fn create(session: *Session, output: *wlr.Output) !void {
     var state = wlr.Output.State.init();
     defer state.finish();
 
-    // const rule = (session.config.monitor_rules.get(std.mem.span(output.name)));
     state.setEnabled(true);
     state.setScale(1.0);
     state.setTransform(.normal);

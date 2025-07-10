@@ -476,7 +476,6 @@ pub fn endDrag(self: *Input) !bool {
         if (self.xcursor_image) |xcursor_image|
             self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
 
-        // self.seat.pointerClearFocus();
         try self.motionNotify(0);
 
         self.grab_client = null;
