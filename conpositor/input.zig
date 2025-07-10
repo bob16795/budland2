@@ -32,6 +32,8 @@ const InputEvents = struct {
 
     request_set_cursor_event: wl.Listener(*wlr.Seat.event.RequestSetCursor) = .init(Listeners.request_set_cursor),
     set_cursor_shape_event: wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape) = .init(Listeners.set_cursor_shape),
+    request_set_primary_selection: wl.Listener(*wlr.Seat.event.RequestSetPrimarySelection) = .init(Listeners.set_psel),
+    request_set_selection: wl.Listener(*wlr.Seat.event.RequestSetSelection) = .init(Listeners.set_sel),
 
     new_input_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.new_input),
 };
@@ -212,6 +214,20 @@ const Listeners = struct {
         };
     }
 
+    pub fn set_sel(listener: *wl.Listener(*wlr.Seat.event.RequestSetSelection), event: *wlr.Seat.event.RequestSetSelection) void {
+        const events: *InputEvents = @fieldParentPtr("request_set_selection", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.seat.setSelection(event.source, event.serial);
+    }
+
+    pub fn set_psel(listener: *wl.Listener(*wlr.Seat.event.RequestSetPrimarySelection), event: *wlr.Seat.event.RequestSetPrimarySelection) void {
+        const events: *InputEvents = @fieldParentPtr("request_set_primary_selection", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.seat.setPrimarySelection(event.source, event.serial);
+    }
+
     pub fn request_set_cursor(listener: *wl.Listener(*wlr.Seat.event.RequestSetCursor), event: *wlr.Seat.event.RequestSetCursor) void {
         const events: *InputEvents = @fieldParentPtr("request_set_cursor_event", listener);
         const self: *Input = @fieldParentPtr("events", events);
@@ -284,6 +300,8 @@ pub fn init(self: *Input, session: *Session) !void {
 
     const seat = try wlr.Seat.create(session.server, "seat0");
     seat.events.request_set_cursor.add(&self.events.request_set_cursor_event);
+    seat.events.request_set_primary_selection.add(&self.events.request_set_primary_selection);
+    seat.events.request_set_selection.add(&self.events.request_set_selection);
 
     std.log.warn("TODO: virtual keyboards", .{});
 
