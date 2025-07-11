@@ -89,6 +89,8 @@ const LuaFilter = struct {
     title: ?[]const u8,
     appid: ?[]const u8,
 
+    const LuaMethods = struct {};
+
     pub fn matches(self: *const LuaFilter, title: []const u8, appid: []const u8) bool {
         if (self.title) |trg_title|
             if (!std.mem.eql(u8, trg_title, title))
@@ -127,7 +129,7 @@ const LuaFilter = struct {
     }
 };
 
-pub const LuaClosure = struct {
+const LuaClosure = struct {
     ref: i32,
     upvs: []i32,
     lua: *Lua,
@@ -165,7 +167,7 @@ pub const LuaClosure = struct {
     }
 };
 
-pub const LuaRect = struct {
+const LuaRect = struct {
     x: f64,
     y: f64,
     width: f64,
@@ -251,6 +253,17 @@ pub const LuaModule = struct {
     calls: LuaClosure,
     lua: *Lua,
 
+    const LuaMethods = struct {
+        pub fn new(text: LuaClosure) LuaModule {
+            std.log.info("new module {}", .{text.ref});
+
+            return .{
+                .calls = text,
+                .lua = text.lua,
+            };
+        }
+    };
+
     pub fn getText(self: *LuaModule, client: *Client) ![:0]const u8 {
         const lua = self.lua;
 
@@ -279,15 +292,6 @@ pub const LuaModule = struct {
         self.calls.deinit();
     }
 
-    pub fn lua_new(text: LuaClosure) LuaModule {
-        std.log.info("new module {}", .{text.ref});
-
-        return .{
-            .calls = text,
-            .lua = text.lua,
-        };
-    }
-
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaModule {
         const result = try lua.toUserdata(LuaModule, index);
         return result.*;
@@ -303,6 +307,8 @@ pub const LuaModule = struct {
 
 const LuaTag = struct {
     id: u8,
+
+    const LuaMethods = struct {};
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaTag {
         const result = try lua.toUserdata(LuaTag, index);
@@ -320,33 +326,35 @@ const LuaTag = struct {
 const LuaContainer = struct {
     child: *Layout.Container,
 
-    pub fn lua_set_stack(parent: *LuaContainer, stack: ?u8) void {
-        const self = parent.child;
+    const LuaMethods = struct {
+        pub fn set_stack(parent: *LuaContainer, stack: ?u8) void {
+            const self = parent.child;
 
-        self.stack = stack;
-    }
+            self.stack = stack;
+        }
 
-    pub fn lua_add_child(parent: *LuaContainer, x_min: f64, y_min: f64, x_max: f64, y_max: f64) !LuaContainer {
-        const self = parent.child;
+        pub fn add_child(parent: *LuaContainer, x_min: f64, y_min: f64, x_max: f64, y_max: f64) !LuaContainer {
+            const self = parent.child;
 
-        const container = try allocator.create(Layout.Container);
-        container.* = .{
-            .stack = null,
-            .size = .{
-                .x_min = x_min,
-                .x_max = x_max,
-                .y_min = y_min,
-                .y_max = y_max,
-            },
-            .children = &.{},
-        };
+            const container = try allocator.create(Layout.Container);
+            container.* = .{
+                .stack = null,
+                .size = .{
+                    .x_min = x_min,
+                    .x_max = x_max,
+                    .y_min = y_min,
+                    .y_max = y_max,
+                },
+                .children = &.{},
+            };
 
-        self.children = try allocator.realloc(self.children, self.children.len + 1);
-        self.children[self.children.len - 1] = container;
+            self.children = try allocator.realloc(self.children, self.children.len + 1);
+            self.children[self.children.len - 1] = container;
 
-        std.log.info("child: {}", .{self.children.len - 1});
-        return .{ .child = container };
-    }
+            std.log.info("child: {}", .{self.children.len - 1});
+            return .{ .child = container };
+        }
+    };
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaContainer {
         const result = try lua.toUserdata(LuaContainer, index);
@@ -364,11 +372,13 @@ const LuaContainer = struct {
 const LuaLayout = struct {
     child: *Layout,
 
-    pub fn lua_root(self: *LuaLayout) LuaContainer {
-        return .{
-            .child = self.child.container,
-        };
-    }
+    const LuaMethods = struct {
+        pub fn root(self: *LuaLayout) LuaContainer {
+            return .{
+                .child = self.child.container,
+            };
+        }
+    };
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaLayout {
         const result = try lua.toUserdata(LuaLayout, index);
@@ -386,44 +396,46 @@ const LuaLayout = struct {
 pub const LuaMonitor = struct {
     child: *Monitor,
 
-    pub fn lua_get_size(self: *LuaMonitor) !LuaRect {
-        return .{
-            .x = @floatFromInt(self.child.mode.x),
-            .y = @floatFromInt(self.child.mode.y),
-            .width = @floatFromInt(self.child.mode.width),
-            .height = @floatFromInt(self.child.mode.height),
-        };
-    }
+    const LuaMethods = struct {
+        pub fn get_size(self: *LuaMonitor) !LuaRect {
+            return .{
+                .x = @floatFromInt(self.child.mode.x),
+                .y = @floatFromInt(self.child.mode.y),
+                .width = @floatFromInt(self.child.mode.width),
+                .height = @floatFromInt(self.child.mode.height),
+            };
+        }
 
-    pub fn lua_get_tag(self: *LuaMonitor) !LuaTag {
-        return .{ .id = self.child.tag };
-    }
+        pub fn get_tag(self: *LuaMonitor) !LuaTag {
+            return .{ .id = self.child.tag };
+        }
 
-    pub fn lua_set_tag(self: *LuaMonitor, tag: *LuaTag) void {
-        self.child.setTag(tag.id);
+        pub fn set_tag(self: *LuaMonitor, tag: *LuaTag) void {
+            self.child.setActiveTag(tag.id);
 
-        std.log.info("set tag {}", .{tag.id});
-    }
+            std.log.info("set tag {}", .{tag.id});
+        }
 
-    pub fn lua_get_layout(self: *LuaMonitor) ?LuaLayout {
-        return .{
-            .child = self.child.layout orelse return null,
-        };
-    }
+        pub fn get_layout(self: *LuaMonitor) ?LuaLayout {
+            return .{
+                .child = self.child.layout orelse return null,
+            };
+        }
 
-    pub fn lua_set_layout(self: *LuaMonitor, layout: LuaLayout) void {
-        std.log.info("set layout {}", .{layout});
+        pub fn set_layout(self: *LuaMonitor, layout: LuaLayout) void {
+            std.log.info("set layout {}", .{layout});
 
-        self.child.setLayout(layout.child);
-    }
+            self.child.setLayout(layout.child);
+        }
 
-    pub fn lua_set_inner_gaps(self: *LuaMonitor, size: i32) void {
-        self.child.setGaps(.inner, size);
-    }
+        pub fn set_inner_gaps(self: *LuaMonitor, size: i32) void {
+            self.child.setGaps(.inner, size);
+        }
 
-    pub fn lua_set_outer_gaps(self: *LuaMonitor, size: i32) void {
-        self.child.setGaps(.outer, size);
-    }
+        pub fn set_outer_gaps(self: *LuaMonitor, size: i32) void {
+            self.child.setGaps(.outer, size);
+        }
+    };
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaMonitor {
         const result = try lua.toUserdata(LuaMonitor, index);
@@ -441,155 +453,157 @@ pub const LuaMonitor = struct {
 const LuaClient = struct {
     child: *Client,
 
-    pub fn lua_get_position(self: *LuaClient) !LuaRect {
-        return .{
-            .x = @floatFromInt(self.child.floating_bounds.x),
-            .y = @floatFromInt(self.child.floating_bounds.y),
-            .width = @floatFromInt(self.child.floating_bounds.width),
-            .height = @floatFromInt(self.child.floating_bounds.height),
-        };
-    }
-
-    pub fn lua_set_position(self: *LuaClient, target: LuaRect) void {
-        self.child.setFloatingSize(.{
-            .x = @intFromFloat(target.x),
-            .y = @intFromFloat(target.y),
-            .width = @intFromFloat(target.width),
-            .height = @intFromFloat(target.height),
-        });
-    }
-
-    pub fn lua_get_fullscreen(self: *LuaClient) bool {
-        return self.child.fullscreen;
-    }
-
-    pub fn lua_set_fullscreen(self: *LuaClient, fullscreen: bool) void {
-        self.child.setFullscreen(fullscreen);
-    }
-
-    pub fn lua_set_border(self: *LuaClient, border: i32) void {
-        self.child.setBorder(border);
-    }
-
-    pub fn lua_set_icon(self: *LuaClient, icon: ?[:0]const u8) void {
-        self.child.setIcon(@ptrCast(icon));
-    }
-
-    pub fn lua_set_label(self: *LuaClient, label: ?[:0]const u8) void {
-        self.child.setLabel(label);
-    }
-
-    pub fn lua_get_label(self: *LuaClient) ?[:0]const u8 {
-        return self.child.label;
-    }
-
-    pub fn lua_get_appid(self: *LuaClient) ?[:0]const u8 {
-        return self.child.getAppId();
-    }
-
-    pub fn luaraw_set_modules(lua: *Lua) !i32 {
-        const old_top = lua.getTop();
-
-        const self: *LuaClient = try lua.toAny(*LuaClient, -2);
-
-        self.child.tab.left_modules.clearRetainingCapacity();
-        self.child.tab.center_modules.clearRetainingCapacity();
-        self.child.tab.right_modules.clearRetainingCapacity();
-        self.child.dirty.title = true;
-
-        _ = lua.getField(-1, "left");
-        const left_len = lua.rawLen(-1);
-
-        for (1..left_len + 1) |idx| {
-            _ = try lua.pushAny(idx);
-            _ = lua.getTable(-2);
-            defer lua.pop(1);
-
-            try self.child.tab.left_modules.append(try lua.toAny(LuaModule, -1));
+    const LuaMethods = struct {
+        pub fn get_position(self: *LuaClient) !LuaRect {
+            return .{
+                .x = @floatFromInt(self.child.floating_bounds.x),
+                .y = @floatFromInt(self.child.floating_bounds.y),
+                .width = @floatFromInt(self.child.floating_bounds.width),
+                .height = @floatFromInt(self.child.floating_bounds.height),
+            };
         }
 
-        lua.pop(1);
-
-        _ = lua.getField(-1, "center");
-        const center_len = lua.rawLen(-1);
-
-        for (1..center_len + 1) |idx| {
-            _ = try lua.pushAny(idx);
-            _ = lua.getTable(-2);
-            defer lua.pop(1);
-
-            try self.child.tab.center_modules.append(try lua.toAny(LuaModule, -1));
+        pub fn set_position(self: *LuaClient, target: LuaRect) void {
+            self.child.setFloatingSize(.{
+                .x = @intFromFloat(target.x),
+                .y = @intFromFloat(target.y),
+                .width = @intFromFloat(target.width),
+                .height = @intFromFloat(target.height),
+            });
         }
 
-        lua.pop(1);
-
-        _ = lua.getField(-1, "right");
-        const right_len = lua.rawLen(-1);
-
-        for (1..right_len + 1) |idx| {
-            _ = try lua.pushAny(idx);
-            _ = lua.getTable(-2);
-            defer lua.pop(1);
-
-            try self.child.tab.right_modules.append(try lua.toAny(LuaModule, -1));
+        pub fn get_fullscreen(self: *LuaClient) bool {
+            return self.child.fullscreen;
         }
 
-        lua.pop(1);
+        pub fn set_fullscreen(self: *LuaClient, fullscreen: bool) void {
+            self.child.setFullscreen(fullscreen);
+        }
 
-        if (old_top != lua.getTop() + 0)
-            return error.LuaError;
+        pub fn set_border(self: *LuaClient, border: i32) void {
+            self.child.setBorder(border);
+        }
 
-        return 0;
-    }
+        pub fn set_icon(self: *LuaClient, icon: ?[:0]const u8) void {
+            self.child.setIcon(@ptrCast(icon));
+        }
 
-    pub fn lua_get_title(self: *LuaClient) ?[:0]const u8 {
-        return self.child.getTitle();
-    }
+        pub fn set_label(self: *LuaClient, label: ?[:0]const u8) void {
+            self.child.setLabel(label);
+        }
 
-    pub fn lua_get_icon(self: *LuaClient) ?[:0]const u8 {
-        return self.child.icon;
-    }
+        pub fn get_label(self: *LuaClient) ?[:0]const u8 {
+            return self.child.label;
+        }
 
-    pub fn lua_set_tag(self: *LuaClient, tag: *LuaTag) void {
-        self.child.setTag(tag.id);
-    }
+        pub fn get_appid(self: *LuaClient) ?[:0]const u8 {
+            return self.child.getAppId();
+        }
 
-    pub fn lua_set_monitor(self: *LuaClient, monitor: LuaMonitor) void {
-        self.child.setMonitor(monitor.child);
-    }
+        pub fn get_title(self: *LuaClient) ?[:0]const u8 {
+            return self.child.getTitle();
+        }
 
-    pub fn lua_set_stack(self: *LuaClient, stack: u8) void {
-        self.child.setContainer(stack);
-        self.child.setFloating(false);
+        pub fn get_icon(self: *LuaClient) ?[:0]const u8 {
+            return self.child.icon;
+        }
 
-        std.log.info("set container {}", .{stack});
-    }
+        pub fn set_tag(self: *LuaClient, tag: *LuaTag) void {
+            self.child.setTag(tag.id);
+        }
 
-    pub fn lua_set_container(self: *LuaClient, container: *LuaContainer) void {
-        if (container.child.stack) |stack| {
+        pub fn set_monitor(self: *LuaClient, monitor: LuaMonitor) void {
+            self.child.setMonitor(monitor.child);
+        }
+
+        pub fn set_stack(self: *LuaClient, stack: u8) void {
             self.child.setContainer(stack);
             self.child.setFloating(false);
 
             std.log.info("set container {}", .{stack});
         }
-    }
 
-    pub fn lua_get_floating(self: *LuaClient) bool {
-        return self.child.floating;
-    }
+        pub fn set_container(self: *LuaClient, container: *LuaContainer) void {
+            if (container.child.stack) |stack| {
+                self.child.setContainer(stack);
+                self.child.setFloating(false);
 
-    pub fn lua_set_floating(self: *LuaClient, value: bool) void {
-        self.child.setFloating(value);
-    }
+                std.log.info("set container {}", .{stack});
+            }
+        }
 
-    pub fn lua_get_stack(self: *LuaClient) ?LuaStack {
-        if (self.child.floating) return null;
-        return .{ .id = self.child.container };
-    }
+        pub fn get_floating(self: *LuaClient) bool {
+            return self.child.floating;
+        }
 
-    pub fn lua_close(self: *LuaClient) void {
-        self.child.close();
-    }
+        pub fn set_floating(self: *LuaClient, value: bool) void {
+            self.child.setFloating(value);
+        }
+
+        pub fn get_stack(self: *LuaClient) ?LuaStack {
+            if (self.child.floating) return null;
+            return .{ .id = self.child.container };
+        }
+
+        pub fn close(self: *LuaClient) void {
+            self.child.close();
+        }
+
+        pub fn raw_set_modules(lua: *Lua) !i32 {
+            const old_top = lua.getTop();
+
+            const self: *LuaClient = try lua.toAny(*LuaClient, -2);
+
+            self.child.tab.left_modules.clearRetainingCapacity();
+            self.child.tab.center_modules.clearRetainingCapacity();
+            self.child.tab.right_modules.clearRetainingCapacity();
+            self.child.dirty.title = true;
+
+            _ = lua.getField(-1, "left");
+            const left_len = lua.rawLen(-1);
+
+            for (1..left_len + 1) |idx| {
+                _ = try lua.pushAny(idx);
+                _ = lua.getTable(-2);
+                defer lua.pop(1);
+
+                try self.child.tab.left_modules.append(try lua.toAny(LuaModule, -1));
+            }
+
+            lua.pop(1);
+
+            _ = lua.getField(-1, "center");
+            const center_len = lua.rawLen(-1);
+
+            for (1..center_len + 1) |idx| {
+                _ = try lua.pushAny(idx);
+                _ = lua.getTable(-2);
+                defer lua.pop(1);
+
+                try self.child.tab.center_modules.append(try lua.toAny(LuaModule, -1));
+            }
+
+            lua.pop(1);
+
+            _ = lua.getField(-1, "right");
+            const right_len = lua.rawLen(-1);
+
+            for (1..right_len + 1) |idx| {
+                _ = try lua.pushAny(idx);
+                _ = lua.getTable(-2);
+                defer lua.pop(1);
+
+                try self.child.tab.right_modules.append(try lua.toAny(LuaModule, -1));
+            }
+
+            lua.pop(1);
+
+            if (old_top != lua.getTop() + 0)
+                return error.LuaError;
+
+            return 0;
+        }
+    };
 
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaClient {
         const result = try lua.toUserdata(LuaClient, index);
@@ -607,6 +621,8 @@ const LuaClient = struct {
 const LuaStack = struct {
     id: u8,
 
+    const LuaMethods = struct {};
+
     pub fn fromLua(lua: *Lua, _: ?std.mem.Allocator, index: i32) !LuaStack {
         const result = try lua.toUserdata(LuaStack, index);
         return result.*;
@@ -620,11 +636,285 @@ const LuaStack = struct {
     }
 };
 
+const LuaMethods = struct {
+    pub fn is_debug() bool {
+        return @import("builtin").mode == .Debug;
+    }
+
+    pub fn quit(self: *Config) !void {
+        const session: *Session = @fieldParentPtr("config", self);
+
+        session.quit();
+    }
+
+    pub fn active_client(self: *Config) ?LuaClient {
+        const session: *Session = @fieldParentPtr("config", self);
+
+        return .{
+            .child = session.focusedClient() orelse return null,
+        };
+    }
+
+    pub fn active_monitor(self: *Config) ?LuaMonitor {
+        const session: *Session = @fieldParentPtr("config", self);
+
+        return .{
+            .child = session.focusedMonitor orelse return null,
+        };
+    }
+
+    pub fn cycle_focus(self: *Config, dir: i32) !void {
+        const session: *Session = @fieldParentPtr("config", self);
+
+        if (dir == 1)
+            try session.focusStack(.forward)
+        else if (dir == -1)
+            try session.focusStack(.backward)
+        else
+            return error.BadCycleDirection;
+    }
+
+    pub fn spawn(_: *Config, name: [:0]const u8, args: [][*:0]const u8) !void {
+        const child_name = try allocator.dupeZ(u8, name);
+        const child_args: [:null]?[*:0]const u8 = (try std.mem.concatWithSentinel(allocator, ?[*:0]const u8, &.{ &.{child_name}, args, &.{null} }, null));
+
+        const pid = std.posix.fork() catch {
+            return error.Other;
+        };
+
+        if (pid == 0) {
+            for (child_args) |arg|
+                std.log.info("run {?s}", .{arg});
+
+            cleanupChild();
+
+            const pid2 = std.posix.fork() catch c._exit(1);
+            if (pid2 == 0) {
+                std.posix.execvpeZ(child_name, child_args, std.c.environ) catch c._exit(1);
+            }
+
+            c._exit(0);
+        }
+
+        // Wait the intermediate child.
+        const ret = std.posix.waitpid(pid, 0);
+        if (!std.posix.W.IFEXITED(ret.status) or
+            (std.posix.W.IFEXITED(ret.status) and std.posix.W.EXITSTATUS(ret.status) != 0))
+        {}
+    }
+
+    pub fn set_font(self: *Config, face: []const u8, size: f32) !void {
+        self.font.deinit();
+
+        self.font = .{
+            .face = try allocator.dupeZ(u8, face),
+            .size = @intFromFloat(size),
+        };
+
+        std.log.info("set font {}", .{self.font});
+    }
+
+    pub fn add_layout(self: *Config, name: []const u8) !LuaLayout {
+        const container = try allocator.create(Layout.Container);
+
+        container.* = .{
+            .stack = null,
+            .size = .{ .x_min = 0, .x_max = 1, .y_min = 0, .y_max = 1 },
+            .children = &.{},
+        };
+
+        const layout = try allocator.create(Layout);
+
+        layout.* = .{
+            .name = try allocator.dupeZ(u8, name),
+            .container = container,
+        };
+
+        try self.layouts.append(layout);
+
+        return .{ .child = layout };
+    }
+
+    pub fn new_tag(self: *Config, name: [:0]const u8) !LuaTag {
+        const name_dup = try allocator.dupeZ(u8, name);
+        try self.tags.append(name_dup);
+
+        std.log.info("create tag {s}", .{name_dup});
+
+        return .{ .id = @intCast(self.tags.items.len - 1) };
+    }
+
+    pub fn set_color(self: *Config, active: bool, palette_name: []const u8, color_name: []const u8) !void {
+        const session: *Session = @fieldParentPtr("config", self);
+
+        var r: f32 = 1.0;
+        var g: f32 = 1.0;
+        var b: f32 = 1.0;
+        var a: f32 = 1.0;
+
+        std.log.info("color_name: {s}", .{color_name});
+
+        if (color_name.len == 9) {
+            if (color_name[0] != '#')
+                return error.BadColor;
+
+            const color = try std.fmt.parseInt(u32, color_name[1..], 16);
+            r = @as(f32, @floatFromInt((color >> 24) & 0xff)) / 255;
+            g = @as(f32, @floatFromInt((color >> 16) & 0xff)) / 255;
+            b = @as(f32, @floatFromInt((color >> 8) & 0xff)) / 255;
+            a = @as(f32, @floatFromInt((color >> 0) & 0xff)) / 255;
+        } else if (color_name.len == 7) {
+            if (color_name[0] != '#')
+                return error.BadColor;
+
+            const color = try std.fmt.parseInt(u32, color_name[1..], 16);
+            r = @as(f32, @floatFromInt((color >> 16) & 0xff)) / 255;
+            g = @as(f32, @floatFromInt((color >> 8) & 0xff)) / 255;
+            b = @as(f32, @floatFromInt((color >> 0) & 0xff)) / 255;
+            a = 1.0;
+        } else return error.BadColor;
+
+        const palette = std.meta.stringToEnum(PaletteColor, palette_name) orelse return error.BadLayer;
+
+        std.log.info("rgba for {} {}, {} {} {} {}", .{ active, palette, r, g, b, a });
+
+        if (active)
+            self.active_colors.set(palette, .{ r, g, b, a })
+        else
+            self.inactive_colors.set(palette, .{ r, g, b, a });
+
+        try session.reloadColors();
+    }
+
+    pub fn raw_add_bind(lua: *Lua) !i32 {
+        const old_top = lua.getTop();
+
+        const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
+        const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Not a string", .{});
+        const key_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
+        const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+        errdefer calls.deinit();
+
+        var mods: wlr.Keyboard.ModifierMask = .{};
+
+        for (mod_names) |m| {
+            switch (std.ascii.toLower(m)) {
+                'c' => mods.ctrl = true,
+                's' => mods.shift = true,
+                'l' => mods.logo = true,
+                'a' => mods.alt = true,
+                else => {},
+            }
+        }
+
+        {
+            const key: BindData = .{
+                .key = xkb.Keysym.fromName(key_name, .case_insensitive),
+                .mods = mods,
+            };
+
+            if (try self.binds.fetchPut(key, calls)) |value|
+                value.value.deinit();
+
+            std.log.info("create bind {}", .{key});
+        }
+
+        if (old_top != lua.getTop() + 0)
+            return error.LuaError;
+
+        return 0;
+    }
+
+    pub fn raw_add_mouse(lua: *Lua) !i32 {
+        const old_top = lua.getTop();
+
+        const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
+        const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Mods not a string", .{});
+        const key_name = lua.toString(-2) catch lua.raiseErrorStr("Button not a string", .{});
+        const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+        errdefer calls.deinit();
+
+        var mods: wlr.Keyboard.ModifierMask = .{};
+
+        for (mod_names) |m| {
+            switch (std.ascii.toLower(m)) {
+                'c' => mods.ctrl = true,
+                's' => mods.shift = true,
+                'l' => mods.logo = true,
+                'a' => mods.alt = true,
+                else => {},
+            }
+        }
+
+        const button: u32 = if (std.mem.eql(u8, key_name, "Left"))
+            272
+        else if (std.mem.eql(u8, key_name, "Right"))
+            273
+        else
+            return error.InvalidMouseButton;
+
+        const key: MouseBindData = .{
+            .button = button,
+            .mods = mods,
+        };
+
+        if (try self.mouse_binds.fetchPut(key, calls)) |value|
+            value.value.deinit();
+
+        std.log.info("set mouse bind {}", .{key});
+
+        if (old_top != lua.getTop() + 0)
+            return error.LuaError;
+
+        return 0;
+    }
+
+    pub fn raw_add_rule(lua: *Lua) !i32 {
+        const old_top = lua.getTop();
+
+        const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
+        const filter = lua.toAny(LuaFilter, -2) catch lua.raiseErrorStr("Not a lua filter", .{});
+        const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+        errdefer calls.deinit();
+
+        try self.rules.append(.{
+            .filter = filter,
+            .calls = calls,
+        });
+
+        if (old_top != lua.getTop() + 0)
+            return error.LuaError;
+
+        return 0;
+    }
+
+    pub fn raw_add_hook(lua: *Lua) !i32 {
+        const old_top = lua.getTop();
+
+        const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
+        const event_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
+        const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
+        errdefer calls.deinit();
+
+        const event_id = std.meta.stringToEnum(Event, event_name) orelse return error.BadEventName;
+
+        try self.events.append(.{
+            .event = event_id,
+            .calls = calls,
+        });
+
+        if (old_top != lua.getTop() + 0)
+            return error.LuaError;
+
+        return 0;
+    }
+};
+
 var original_rlimit: ?std.posix.rlimit = null;
 
 // from river:
 // https://github.com/riverwm/river/blob/46f77f30dcce06b7af0ec8dff5ae3e4fbc73176f/river/process.zig
-pub fn cleanupChild() void {
+fn cleanupChild() void {
     if (c.setsid() < 0) unreachable;
     if (std.posix.system.sigprocmask(std.posix.SIG.SETMASK, &std.posix.sigemptyset(), null) < 0) unreachable;
 
@@ -643,284 +933,12 @@ pub fn cleanupChild() void {
     }
 }
 
-pub fn lua_spawn(_: *Config, name: [:0]const u8, args: [][*:0]const u8) !void {
-    const child_name = try allocator.dupeZ(u8, name);
-    const child_args: [:null]?[*:0]const u8 = (try std.mem.concatWithSentinel(allocator, ?[*:0]const u8, &.{ &.{child_name}, args, &.{null} }, null));
-
-    const pid = std.posix.fork() catch {
-        return error.Other;
-    };
-
-    if (pid == 0) {
-        for (child_args) |arg|
-            std.log.info("run {?s}", .{arg});
-
-        cleanupChild();
-
-        const pid2 = std.posix.fork() catch c._exit(1);
-        if (pid2 == 0) {
-            std.posix.execvpeZ(child_name, child_args, std.c.environ) catch c._exit(1);
-        }
-
-        c._exit(0);
-    }
-
-    // Wait the intermediate child.
-    const ret = std.posix.waitpid(pid, 0);
-    if (!std.posix.W.IFEXITED(ret.status) or
-        (std.posix.W.IFEXITED(ret.status) and std.posix.W.EXITSTATUS(ret.status) != 0))
-    {}
-}
-
-pub fn lua_set_font(self: *Config, face: []const u8, size: f32) !void {
-    self.font.deinit();
-
-    self.font = .{
-        .face = try allocator.dupeZ(u8, face),
-        .size = @intFromFloat(size),
-    };
-
-    std.log.info("set font {}", .{self.font});
-}
-
-pub fn lua_add_layout(self: *Config, name: []const u8) !LuaLayout {
-    const container = try allocator.create(Layout.Container);
-
-    container.* = .{
-        .stack = null,
-        .size = .{ .x_min = 0, .x_max = 1, .y_min = 0, .y_max = 1 },
-        .children = &.{},
-    };
-
-    const layout = try allocator.create(Layout);
-
-    layout.* = .{
-        .name = try allocator.dupeZ(u8, name),
-        .container = container,
-    };
-
-    try self.layouts.append(layout);
-
-    return .{ .child = layout };
-}
-
-pub fn lua_new_tag(self: *Config, name: [:0]const u8) !LuaTag {
-    const name_dup = try allocator.dupeZ(u8, name);
-    try self.tags.append(name_dup);
-
-    std.log.info("create tag {s}", .{name_dup});
-
-    return .{ .id = @intCast(self.tags.items.len - 1) };
-}
-
-pub fn lua_set_color(self: *Config, active: bool, palette_name: []const u8, color_name: []const u8) !void {
-    const session: *Session = @fieldParentPtr("config", self);
-
-    var r: f32 = 1.0;
-    var g: f32 = 1.0;
-    var b: f32 = 1.0;
-    var a: f32 = 1.0;
-
-    std.log.info("color_name: {s}", .{color_name});
-
-    if (color_name.len == 9) {
-        if (color_name[0] != '#')
-            return error.BadColor;
-
-        const color = try std.fmt.parseInt(u32, color_name[1..], 16);
-        r = @as(f32, @floatFromInt((color >> 24) & 0xff)) / 255;
-        g = @as(f32, @floatFromInt((color >> 16) & 0xff)) / 255;
-        b = @as(f32, @floatFromInt((color >> 8) & 0xff)) / 255;
-        a = @as(f32, @floatFromInt((color >> 0) & 0xff)) / 255;
-    } else if (color_name.len == 7) {
-        if (color_name[0] != '#')
-            return error.BadColor;
-
-        const color = try std.fmt.parseInt(u32, color_name[1..], 16);
-        r = @as(f32, @floatFromInt((color >> 16) & 0xff)) / 255;
-        g = @as(f32, @floatFromInt((color >> 8) & 0xff)) / 255;
-        b = @as(f32, @floatFromInt((color >> 0) & 0xff)) / 255;
-        a = 1.0;
-    } else return error.BadColor;
-
-    const palette = std.meta.stringToEnum(PaletteColor, palette_name) orelse return error.BadLayer;
-
-    std.log.info("rgba for {} {}, {} {} {} {}", .{ active, palette, r, g, b, a });
-
-    if (active)
-        self.active_colors.set(palette, .{ r, g, b, a })
-    else
-        self.inactive_colors.set(palette, .{ r, g, b, a });
-
-    try session.reloadColors();
-}
-
-pub fn lua_cycle_focus(self: *Config, dir: i32) !void {
-    const session: *Session = @fieldParentPtr("config", self);
-
-    if (dir == 1)
-        try session.focusStack(.forward)
-    else if (dir == -1)
-        try session.focusStack(.backward)
-    else
-        return error.BadCycleDirection;
-}
-
-pub fn lua_active_monitor(self: *Config) ?LuaMonitor {
-    const session: *Session = @fieldParentPtr("config", self);
-
-    return .{
-        .child = session.focusedMonitor orelse return null,
-    };
-}
-
-pub fn lua_active_client(self: *Config) ?LuaClient {
-    const session: *Session = @fieldParentPtr("config", self);
-
-    return .{
-        .child = session.focusedClient() orelse return null,
-    };
-}
-
-pub fn lua_quit(self: *Config) !void {
-    const session: *Session = @fieldParentPtr("config", self);
-
-    session.quit();
-}
-
-pub fn lua_is_debug() bool {
-    return @import("builtin").mode == .Debug;
-}
-
-pub fn luaraw_add_hook(lua: *Lua) !i32 {
-    const old_top = lua.getTop();
-
-    const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
-    const event_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
-    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
-    errdefer calls.deinit();
-
-    const event_id = std.meta.stringToEnum(Event, event_name) orelse return error.BadEventName;
-
-    try self.events.append(.{
-        .event = event_id,
-        .calls = calls,
-    });
-
-    if (old_top != lua.getTop() + 0)
-        return error.LuaError;
-
-    return 0;
-}
-
-pub fn luaraw_add_rule(lua: *Lua) !i32 {
-    const old_top = lua.getTop();
-
-    const self = lua.toAny(*Config, -3) catch lua.raiseErrorStr("Not a Config", .{});
-    const filter = lua.toAny(LuaFilter, -2) catch lua.raiseErrorStr("Not a lua filter", .{});
-    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
-    errdefer calls.deinit();
-
-    try self.rules.append(.{
-        .filter = filter,
-        .calls = calls,
-    });
-
-    if (old_top != lua.getTop() + 0)
-        return error.LuaError;
-
-    return 0;
-}
-
-pub fn luaraw_add_mouse(lua: *Lua) !i32 {
-    const old_top = lua.getTop();
-
-    const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
-    const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Mods not a string", .{});
-    const key_name = lua.toString(-2) catch lua.raiseErrorStr("Button not a string", .{});
-    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
-    errdefer calls.deinit();
-
-    var mods: wlr.Keyboard.ModifierMask = .{};
-
-    for (mod_names) |m| {
-        switch (std.ascii.toLower(m)) {
-            'c' => mods.ctrl = true,
-            's' => mods.shift = true,
-            'l' => mods.logo = true,
-            'a' => mods.alt = true,
-            else => {},
-        }
-    }
-
-    const button: u32 = if (std.mem.eql(u8, key_name, "Left"))
-        272
-    else if (std.mem.eql(u8, key_name, "Right"))
-        273
-    else
-        return error.InvalidMouseButton;
-
-    const key: MouseBindData = .{
-        .button = button,
-        .mods = mods,
-    };
-
-    if (try self.mouse_binds.fetchPut(key, calls)) |value|
-        value.value.deinit();
-
-    std.log.info("set mouse bind {}", .{key});
-
-    if (old_top != lua.getTop() + 0)
-        return error.LuaError;
-
-    return 0;
-}
-
-pub fn luaraw_add_bind(lua: *Lua) !i32 {
-    const old_top = lua.getTop();
-
-    const self = lua.toAny(*Config, -4) catch lua.raiseErrorStr("Not a Config", .{});
-    const mod_names = lua.toString(-3) catch lua.raiseErrorStr("Not a string", .{});
-    const key_name = lua.toString(-2) catch lua.raiseErrorStr("Not a string", .{});
-    const calls = lua.toAny(LuaClosure, -1) catch lua.raiseErrorStr("Not a closure", .{});
-    errdefer calls.deinit();
-
-    var mods: wlr.Keyboard.ModifierMask = .{};
-
-    for (mod_names) |m| {
-        switch (std.ascii.toLower(m)) {
-            'c' => mods.ctrl = true,
-            's' => mods.shift = true,
-            'l' => mods.logo = true,
-            'a' => mods.alt = true,
-            else => {},
-        }
-    }
-
-    {
-        const key: BindData = .{
-            .key = xkb.Keysym.fromName(key_name, .case_insensitive),
-            .mods = mods,
-        };
-
-        if (try self.binds.fetchPut(key, calls)) |value|
-            value.value.deinit();
-
-        std.log.info("create bind {}", .{key});
-    }
-
-    if (old_top != lua.getTop() + 0)
-        return error.LuaError;
-
-    return 0;
-}
-
 fn roFunction() !void {
     return error.ReadOnlySet;
 }
 
-pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) ConfigError!void {
-    const info = @typeInfo(T);
+inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) ConfigError!void {
+    const info = @typeInfo(T.LuaMethods);
 
     if (info != .@"struct") @compileError("expected struct for pushtype");
 
@@ -928,28 +946,28 @@ pub inline fn globalType(lua: *Lua, comptime T: type, name: [:0]const u8) Config
     lua.newTable();
 
     inline for (info.@"struct".decls) |decl| {
-        if (comptime std.mem.startsWith(u8, decl.name, "lua_")) {
+        if (comptime std.mem.startsWith(u8, decl.name, "raw_")) {
             const new_name = decl.name[4..];
 
-            const field_value = @field(T, decl.name);
-            const field_type = @TypeOf(field_value);
-            const field_info = @typeInfo(field_type);
-            switch (field_info) {
-                .@"fn" => {
-                    lua.autoPushFunction(field_value);
-                    lua.setField(-2, new_name);
-                },
-                else => {},
-            }
-        } else if (comptime std.mem.startsWith(u8, decl.name, "luaraw_")) {
-            const new_name = decl.name[7..];
-
-            const field_value = @field(T, decl.name);
+            const field_value = @field(T.LuaMethods, decl.name);
             const field_type = @TypeOf(field_value);
             const field_info = @typeInfo(field_type);
             switch (field_info) {
                 .@"fn" => {
                     lua.pushFunction(zlua.wrap(field_value));
+                    lua.setField(-2, new_name);
+                },
+                else => {},
+            }
+        } else {
+            const new_name = decl.name;
+
+            const field_value = @field(T.LuaMethods, decl.name);
+            const field_type = @TypeOf(field_value);
+            const field_info = @typeInfo(field_type);
+            switch (field_info) {
+                .@"fn" => {
+                    lua.autoPushFunction(field_value);
                     lua.setField(-2, new_name);
                 },
                 else => {},
@@ -1214,27 +1232,6 @@ pub fn sendEvent(self: *Config, comptime T: type, event_id: Event, data: T) Conf
     return result;
 }
 
-pub fn deinit(self: *Config) void {
-    for (self.layouts.items) |layout|
-        layout.deinit();
-
-    for (self.rules.items) |rule|
-        rule.filter.deinit();
-
-    for (self.tags.items) |tag|
-        allocator.free(tag);
-
-    self.layouts.deinit();
-    self.tags.deinit();
-    self.binds.deinit();
-    self.mouse_binds.deinit();
-    self.rules.deinit();
-    self.events.deinit();
-
-    self.lua.deinit();
-    self.font.deinit();
-}
-
 pub fn conpositorLogFn(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.EnumLiteral),
@@ -1266,4 +1263,25 @@ pub fn conpositorLogFn(
     // Print the message to stderr, silently ignoring any errors
     const stderr = std.io.getStdErr().writer();
     nosuspend stderr.print(prefix ++ color ++ format ++ "\x1b[m\n", args) catch return;
+}
+
+pub fn deinit(self: *Config) void {
+    for (self.layouts.items) |layout|
+        layout.deinit();
+
+    for (self.rules.items) |rule|
+        rule.filter.deinit();
+
+    for (self.tags.items) |tag|
+        allocator.free(tag);
+
+    self.layouts.deinit();
+    self.tags.deinit();
+    self.binds.deinit();
+    self.mouse_binds.deinit();
+    self.rules.deinit();
+    self.events.deinit();
+
+    self.lua.deinit();
+    self.font.deinit();
 }

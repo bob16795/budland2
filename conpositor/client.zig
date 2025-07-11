@@ -50,7 +50,7 @@ const ClientFrame = struct {
             side.*.node.data = @intFromPtr(client);
         }
 
-        const title_buffer = try CairoBuffer.create(allocator, 1, 1, 1.0);
+        const title_buffer = try CairoBuffer.init(1, 1, 1.0);
         const locked = title_buffer.base.lock();
 
         shadow_tree.node.setEnabled(false);
@@ -84,84 +84,84 @@ pub const ClientSurface = union(SurfaceKind) {
     }
 };
 
-const X11ClientEvents = struct {
-    activate_event: wl.Listener(void) = .init(X11ClientEvents.activate),
-    associate_event: wl.Listener(void) = .init(X11ClientEvents.associate),
-    dissociate_event: wl.Listener(void) = .init(X11ClientEvents.dissociate),
-    configure_event: wl.Listener(*wlr.XwaylandSurface.event.Configure) = .init(X11ClientEvents.configure),
-    set_hints_event: wl.Listener(void) = .init(X11ClientEvents.setHints),
-    deinit_event: wl.Listener(void) = .init(X11ClientEvents.deinit),
+const Events = struct {
+    const XEvents = struct {
+        activate_event: wl.Listener(void) = .init(XEvents.activate),
+        associate_event: wl.Listener(void) = .init(XEvents.associate),
+        dissociate_event: wl.Listener(void) = .init(XEvents.dissociate),
+        configure_event: wl.Listener(*wlr.XwaylandSurface.event.Configure) = .init(XEvents.configure),
+        set_hints_event: wl.Listener(void) = .init(XEvents.setHints),
+        deinit_event: wl.Listener(void) = .init(XEvents.deinit),
 
-    pub fn activate(listener: *wl.Listener(void)) void {
-        const xevents: *X11ClientEvents = @fieldParentPtr("activate_event", listener);
-        const events: *ClientEvents = @fieldParentPtr("xevents", xevents);
-        const client: *Client = @fieldParentPtr("events", events);
+        fn activate(listener: *wl.Listener(void)) void {
+            const xevents: *XEvents = @fieldParentPtr("activate_event", listener);
+            const events: *Events = @fieldParentPtr("xevents", xevents);
+            const client: *Client = @fieldParentPtr("events", events);
 
-        client.activate() catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
+            client.activate() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
 
-    pub fn associate(listener: *wl.Listener(void)) void {
-        const xevents: *X11ClientEvents = @fieldParentPtr("associate_event", listener);
-        const events: *ClientEvents = @fieldParentPtr("xevents", xevents);
-        const client: *Client = @fieldParentPtr("events", events);
+        fn associate(listener: *wl.Listener(void)) void {
+            const xevents: *XEvents = @fieldParentPtr("associate_event", listener);
+            const events: *Events = @fieldParentPtr("xevents", xevents);
+            const client: *Client = @fieldParentPtr("events", events);
 
-        client.associate() catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
+            client.associate() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
 
-    pub fn dissociate(listener: *wl.Listener(void)) void {
-        const xevents: *X11ClientEvents = @fieldParentPtr("dissociate_event", listener);
-        const events: *ClientEvents = @fieldParentPtr("xevents", xevents);
-        const client: *Client = @fieldParentPtr("events", events);
+        fn dissociate(listener: *wl.Listener(void)) void {
+            const xevents: *XEvents = @fieldParentPtr("dissociate_event", listener);
+            const events: *Events = @fieldParentPtr("xevents", xevents);
+            const client: *Client = @fieldParentPtr("events", events);
 
-        client.dissociate() catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
+            client.dissociate() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
 
-    pub fn configure(listener: *wl.Listener(*wlr.XwaylandSurface.event.Configure), event: *wlr.XwaylandSurface.event.Configure) void {
-        const xevents: *X11ClientEvents = @fieldParentPtr("configure_event", listener);
-        const events: *ClientEvents = @fieldParentPtr("xevents", xevents);
-        const client: *Client = @fieldParentPtr("events", events);
+        fn configure(listener: *wl.Listener(*wlr.XwaylandSurface.event.Configure), event: *wlr.XwaylandSurface.event.Configure) void {
+            const xevents: *XEvents = @fieldParentPtr("configure_event", listener);
+            const events: *Events = @fieldParentPtr("xevents", xevents);
+            const client: *Client = @fieldParentPtr("events", events);
 
-        client.configure(event) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
+            client.configure(event) catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
 
-    pub fn setHints(listener: *wl.Listener(void)) void {
-        const xevents: *X11ClientEvents = @fieldParentPtr("set_hints_event", listener);
-        const events: *ClientEvents = @fieldParentPtr("xevents", xevents);
-        const client: *Client = @fieldParentPtr("events", events);
+        fn setHints(listener: *wl.Listener(void)) void {
+            const xevents: *XEvents = @fieldParentPtr("set_hints_event", listener);
+            const events: *Events = @fieldParentPtr("xevents", xevents);
+            const client: *Client = @fieldParentPtr("events", events);
 
-        client.setHints() catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
+            client.setHints() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
 
-    pub fn deinit(listener: *wl.Listener(void)) void {
-        const xevents: *X11ClientEvents = @fieldParentPtr("deinit_event", listener);
-        const events: *ClientEvents = @fieldParentPtr("xevents", xevents);
-        const client: *Client = @fieldParentPtr("events", events);
+        fn deinit(listener: *wl.Listener(void)) void {
+            const xevents: *XEvents = @fieldParentPtr("deinit_event", listener);
+            const events: *Events = @fieldParentPtr("xevents", xevents);
+            const client: *Client = @fieldParentPtr("events", events);
 
-        client.deinit();
-    }
-};
+            client.deinit();
+        }
+    };
 
-const ClientEvents = struct {
-    commit_event: wl.Listener(*wlr.Surface) = .init(ClientEvents.commit),
-    map_event: wl.Listener(void) = .init(ClientEvents.map),
-    unmap_event: wl.Listener(void) = .init(ClientEvents.unmap),
-    deinit_event: wl.Listener(*wlr.Surface) = .init(ClientEvents.deinit),
-    set_title_event: wl.Listener(void) = .init(ClientEvents.setTitle),
-    fullscreen_event: wl.Listener(void) = .init(ClientEvents.fullscreen),
-    xevents: X11ClientEvents = .{},
+    commit_event: wl.Listener(*wlr.Surface) = .init(Events.commit),
+    map_event: wl.Listener(void) = .init(Events.map),
+    unmap_event: wl.Listener(void) = .init(Events.unmap),
+    deinit_event: wl.Listener(*wlr.Surface) = .init(Events.deinit),
+    set_title_event: wl.Listener(void) = .init(Events.setTitle),
+    fullscreen_event: wl.Listener(void) = .init(Events.fullscreen),
+    xevents: XEvents = .{},
 
-    pub fn commit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
-        const events: *ClientEvents = @fieldParentPtr("commit_event", listener);
+    fn commit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
+        const events: *Events = @fieldParentPtr("commit_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
         client.commit() catch |ex| {
@@ -169,8 +169,8 @@ const ClientEvents = struct {
         };
     }
 
-    pub fn map(listener: *wl.Listener(void)) void {
-        const events: *ClientEvents = @fieldParentPtr("map_event", listener);
+    fn map(listener: *wl.Listener(void)) void {
+        const events: *Events = @fieldParentPtr("map_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
         client.map() catch |ex| {
@@ -178,8 +178,8 @@ const ClientEvents = struct {
         };
     }
 
-    pub fn unmap(listener: *wl.Listener(void)) void {
-        const events: *ClientEvents = @fieldParentPtr("unmap_event", listener);
+    fn unmap(listener: *wl.Listener(void)) void {
+        const events: *Events = @fieldParentPtr("unmap_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
         client.unmap() catch |ex| {
@@ -187,22 +187,22 @@ const ClientEvents = struct {
         };
     }
 
-    pub fn deinit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
-        const events: *ClientEvents = @fieldParentPtr("deinit_event", listener);
+    fn deinit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
+        const events: *Events = @fieldParentPtr("deinit_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
         client.deinit();
     }
 
-    pub fn setTitle(listener: *wl.Listener(void)) void {
-        const events: *ClientEvents = @fieldParentPtr("set_title_event", listener);
+    fn setTitle(listener: *wl.Listener(void)) void {
+        const events: *Events = @fieldParentPtr("set_title_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
         client.dirty.title = true;
     }
 
-    pub fn fullscreen(listener: *wl.Listener(void)) void {
-        const events: *ClientEvents = @fieldParentPtr("fullscreen_event", listener);
+    fn fullscreen(listener: *wl.Listener(void)) void {
+        const events: *Events = @fieldParentPtr("fullscreen_event", listener);
         const client: *Client = @fieldParentPtr("events", events);
 
         client.setFullscreen(!client.fullscreen);
@@ -213,7 +213,7 @@ client_id: u8 = 10,
 
 session: *Session,
 surface: ClientSurface,
-events: ClientEvents = .{},
+events: Events = .{},
 
 scene: *wlr.SceneTree = undefined,
 scene_surface: *wlr.SceneTree = undefined,
@@ -258,6 +258,132 @@ tab: Tab = .{},
 // TODO: move this to config
 const SHADOW_SIZE = 10;
 
+pub fn init(session: *Session, target: ClientSurface) !void {
+    switch (target) {
+        .XDG => |surface| {
+            if (surface.role == .popup) {
+                const objects = session.getSurfaceObjects(surface.surface);
+
+                if (surface.role_data.popup.?.parent == null or
+                    (objects.client == null and objects.layer_surface == null))
+                    return;
+
+                const parent = @as(?*wlr.SceneTree, @ptrFromInt(surface.role_data.popup.?.parent.?.data)) orelse
+                    if (objects.client) |client|
+                    client.popup_surface
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.scene_tree
+                else
+                    unreachable;
+
+                const new_surface = try parent.createSceneXdgSurface(surface);
+                surface.surface.data = @intFromPtr(new_surface);
+                new_surface.node.raiseToTop();
+
+                if ((objects.client != null and objects.client.?.monitor == null) or
+                    (objects.layer_surface != null and objects.layer_surface.?.monitor == null))
+                    return;
+
+                var box = if (objects.client) |client|
+                    client.monitor.?.window
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.monitor.?.mode
+                else
+                    unreachable;
+
+                box.x -= if (objects.client) |client|
+                    client.getInnerBounds().x
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.bounds.x
+                else
+                    unreachable;
+                box.y -= if (objects.client) |client|
+                    client.getInnerBounds().y
+                else if (objects.layer_surface) |layer_surface|
+                    layer_surface.bounds.y
+                else
+                    unreachable;
+
+                surface.role_data.popup.?.unconstrainFromBox(&box);
+
+                return;
+            } else if (surface.role == .none)
+                return;
+
+            const client = try allocator.create(Client);
+            surface.data = @intFromPtr(client);
+
+            client.* = .{ .surface = target, .session = session, .managed = true };
+
+            std.log.info("add xdg surface {*} to {*}", .{ target.XDG, client });
+
+            const toplevel = surface.role_data.toplevel orelse @panic("toplevel null");
+
+            _ = toplevel.setWmCapabilities(.{ .fullscreen = true });
+
+            surface.surface.events.commit.add(&client.events.commit_event);
+            surface.surface.events.map.add(&client.events.map_event);
+            surface.surface.events.unmap.add(&client.events.unmap_event);
+            surface.surface.events.destroy.add(&client.events.deinit_event);
+
+            toplevel.events.set_title.add(&client.events.set_title_event);
+            toplevel.events.request_fullscreen.add(&client.events.fullscreen_event);
+
+            std.log.info("created client", .{});
+
+            return;
+        },
+        .X11 => |surface| {
+            const client = try allocator.create(Client);
+            surface.data = @intFromPtr(client);
+
+            client.* = .{ .surface = target, .session = session, .managed = !surface.override_redirect };
+
+            std.log.info("add x11 surface {*} to {*}", .{ target.X11, client });
+
+            // used for reference when comparing to xcb names
+            // https://github.com/swaywm/wlroots/blob/0855cdacb2eeeff35849e2e9c4db0aa996d78d10/include/wlr/xwayland.h#L143
+
+            surface.events.associate.add(&client.events.xevents.associate_event);
+            surface.events.dissociate.add(&client.events.xevents.dissociate_event);
+            surface.events.request_activate.add(&client.events.xevents.activate_event);
+            surface.events.request_configure.add(&client.events.xevents.configure_event);
+            surface.events.set_hints.add(&client.events.xevents.set_hints_event);
+            surface.events.set_title.add(&client.events.set_title_event);
+            surface.events.destroy.add(&client.events.xevents.deinit_event);
+            surface.events.request_fullscreen.add(&client.events.fullscreen_event);
+
+            std.log.info("created x11 client", .{});
+        },
+    }
+}
+
+pub fn update(self: *Client) !void {
+    if (self.dirty.visible)
+        try self.updateVisible();
+
+    if (!self.visible)
+        return;
+
+    if (self.dirty.floating)
+        try self.updateFloating();
+
+    if (self.dirty.fullscreen)
+        try self.updateFullscreen();
+
+    if (self.dirty.frame)
+        try self.updateFrame();
+
+    if (self.dirty.title)
+        try self.updateTitles();
+
+    if (self.dirty.size)
+        try self.updateSize();
+
+    if (self.dirty.top)
+        try self.updateTop();
+}
+
 pub fn getBounds(self: *Client) wlr.Box {
     if (self.fullscreen)
         if (self.monitor) |m|
@@ -293,6 +419,284 @@ pub fn getInnerBounds(self: *Client) wlr.Box {
             .height = bounds.height - self.border - title_height - self.border - self.border,
         },
     };
+}
+
+pub fn getAppId(self: *Client) [:0]const u8 {
+    switch (self.surface) {
+        .XDG => |surface| return std.mem.span(surface.role_data.toplevel.?.app_id) orelse "No appid",
+        .X11 => |surface| return std.mem.span(surface.class) orelse return "No appid",
+    }
+}
+
+pub fn getTitle(self: *Client) [:0]const u8 {
+    switch (self.surface) {
+        .XDG => |surface| return std.mem.span(surface.role_data.toplevel.?.title) orelse "No title",
+        .X11 => |surface| return std.mem.span(surface.title) orelse "No title",
+    }
+}
+
+pub fn getLabel(self: *Client) [:0]const u8 {
+    if (self.label) |label|
+        return label;
+
+    return self.getTitle();
+}
+
+pub fn raiseToTop(self: *Client) void {
+    self.dirty.top = true;
+}
+
+pub fn setVisible(self: *Client, visible: bool) void {
+    if (visible == self.visible)
+        return;
+
+    self.visible = visible;
+    self.dirty.visible = true;
+}
+
+pub fn setFloatingSize(self: *Client, in_target_bounds: wlr.Box) void {
+    self.floating_bounds = self.applyBounds(in_target_bounds, false);
+    if (self.floating)
+        self.dirty.size = true;
+}
+
+pub fn setContainerSize(self: *Client, in_target_bounds: wlr.Box) void {
+    self.container_bounds = self.applyBounds(in_target_bounds, false);
+    if (!self.floating)
+        self.dirty.size = true;
+}
+
+pub fn setContainer(self: *Client, container: u8) void {
+    if (self.container == container)
+        return;
+
+    self.container = container;
+
+    self.dirty.container = true;
+
+    std.log.info("set container: {}", .{self.container});
+
+    if (!self.floating) {
+        var iter = self.session.clients.iterator(.forward);
+        while (iter.next()) |client| {
+            if (self.sharesTabs(client))
+                client.dirty.title = true;
+        }
+
+        if (self.monitor) |m|
+            m.dirty.layout = true;
+    }
+}
+
+pub fn setContainerTitle(self: *Client, title: bool) void {
+    if (self.container_title == title)
+        return;
+
+    self.container_title = title;
+    self.dirty.frame = true;
+}
+
+pub fn setBorder(self: *Client, border: i32) void {
+    if (self.border == border)
+        return;
+
+    self.border = border;
+    self.dirty.frame = true;
+}
+
+pub fn setIcon(self: *Client, icon: ?[:0]const u8) void {
+    if (self.icon) |old_icon|
+        allocator.free(old_icon);
+
+    if (icon) |new_icon|
+        self.icon = allocator.dupeZ(u8, new_icon) catch null
+    else
+        self.icon = null;
+
+    self.dirty.title = true;
+}
+
+pub fn setLabel(self: *Client, label: ?[:0]const u8) void {
+    if (self.label) |old_label|
+        allocator.free(old_label);
+
+    if (label) |new_label|
+        self.label = allocator.dupeZ(u8, new_label) catch null
+    else
+        self.label = null;
+
+    self.dirty.title = true;
+}
+
+pub fn setTag(self: *Client, tag: u8) void {
+    if (self.tag == tag)
+        return;
+
+    self.tag = tag;
+
+    if (self.monitor) |m|
+        m.dirty.layout = true;
+}
+
+pub fn setFullscreen(self: *Client, fullscreen: bool) void {
+    if (self.fullscreen == fullscreen)
+        return;
+
+    self.fullscreen = fullscreen;
+    self.dirty.fullscreen = true;
+    self.dirty.frame = true;
+    self.dirty.size = true;
+
+    if (self.monitor) |m|
+        m.dirty.layout = true;
+}
+
+pub fn setFloating(self: *Client, floating: bool) void {
+    if (self.floating == floating)
+        return;
+
+    // cant unfloat a window im moving
+    if (self.session.input.cursor_mode != .normal and
+        self.session.input.cursor_mode != .pressed and
+        self.floating == true)
+        return;
+
+    self.floating = floating;
+    self.dirty.floating = true;
+    self.dirty.frame = true;
+
+    if (self.monitor) |m|
+        m.dirty.layout = true;
+
+    if (!self.frame.is_init)
+        return;
+}
+
+pub fn getSurface(self: *Client) *wlr.Surface {
+    return switch (self.surface) {
+        .X11 => |surface| surface.surface.?,
+        .XDG => |surface| surface.surface,
+    };
+}
+
+pub fn isMapped(self: *Client) bool {
+    return switch (self.surface) {
+        .X11 => |surface| surface.surface.?.mapped,
+        .XDG => |surface| surface.surface.mapped,
+    };
+}
+
+pub fn isStopped(self: *Client) bool {
+    return switch (self.surface) {
+        .X11 => false,
+        .XDG => {
+            // std.log.warn("TODO: check client stopped", .{});
+            return false;
+        },
+    };
+}
+
+pub fn notifyEnter(self: *Client, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
+    if (kb) |keyb| {
+        seat.keyboardNotifyEnter(self.getSurface(), &keyb.keycodes, &keyb.modifiers);
+    } else {
+        seat.keyboardNotifyEnter(self.getSurface(), &.{}, null);
+    }
+}
+
+pub fn activateSurface(self: *Client, active: bool) void {
+    if (self.active == active)
+        return;
+
+    self.active = active;
+
+    self.dirty.title = true;
+    self.dirty.frame = true;
+
+    switch (self.surface) {
+        .X11 => |surface| surface.activate(active),
+        .XDG => |surface| _ = surface.role_data.toplevel.?.setActivated(active),
+    }
+}
+
+pub fn close(self: *Client) void {
+    switch (self.surface) {
+        .X11 => |surface| surface.close(),
+        .XDG => |surface| surface.role_data.toplevel.?.sendClose(),
+    }
+}
+
+pub fn setMonitor(self: *Client, target_monitor: *Monitor) void {
+    const old_monitor = self.monitor;
+
+    if (old_monitor == target_monitor)
+        return;
+
+    self.monitor = target_monitor;
+
+    if (old_monitor) |old| {
+        self.getSurface().sendLeave(old.output);
+
+        old.dirty.layout = true;
+
+        self.setFloatingSize(.{
+            .x = self.floating_bounds.x - old.mode.x + target_monitor.mode.x,
+            .y = self.floating_bounds.y - old.mode.y + target_monitor.mode.y,
+            .width = self.floating_bounds.width,
+            .height = self.floating_bounds.height,
+        });
+    } else {
+        self.setFloatingSize(.{
+            .x = self.floating_bounds.x + target_monitor.mode.x,
+            .y = self.floating_bounds.y + target_monitor.mode.y,
+            .width = self.floating_bounds.width,
+            .height = self.floating_bounds.height,
+        });
+    }
+
+    self.getSurface().sendEnter(target_monitor.output);
+
+    self.setTag(target_monitor.tag);
+
+    self.setFullscreen(self.fullscreen);
+
+    target_monitor.dirty.layout = true;
+}
+
+pub fn getFrameKind(self: *Client) FrameKind {
+    if (!self.managed or !self.frame.is_init)
+        return .hide;
+
+    if (self.fullscreen)
+        return .hide;
+
+    if (self.floating)
+        return .title;
+
+    if (self.container_title)
+        return .title;
+
+    if (self.border == 0)
+        return .hide;
+
+    return .border;
+}
+
+pub fn clearMonitor(self: *Client) !void {
+    const old_monitor = self.monitor;
+
+    if (old_monitor == null)
+        return;
+
+    self.monitor = null;
+
+    if (old_monitor) |old| {
+        self.getSurface().sendLeave(old.output);
+
+        old.dirty.layout = true;
+    }
+
+    try self.session.focusClient(self, true);
 }
 
 fn sharesTabs(self: *const Client, other: *Client) bool {
@@ -531,132 +935,6 @@ fn updateTop(self: *Client) !void {
     self.scene.node.raiseToTop();
 }
 
-pub fn cleanDirty(self: *Client) !void {
-    if (self.dirty.visible)
-        try self.updateVisible();
-
-    if (!self.visible)
-        return;
-
-    if (self.dirty.floating)
-        try self.updateFloating();
-
-    if (self.dirty.fullscreen)
-        try self.updateFullscreen();
-
-    if (self.dirty.frame)
-        try self.updateFrame();
-
-    if (self.dirty.title)
-        try self.updateTitles();
-
-    if (self.dirty.size)
-        try self.updateSize();
-
-    if (self.dirty.top)
-        try self.updateTop();
-}
-
-pub fn init(session: *Session, target: ClientSurface) !void {
-    switch (target) {
-        .XDG => |surface| {
-            if (surface.role == .popup) {
-                const objects = session.getSurfaceObjects(surface.surface);
-
-                if (surface.role_data.popup.?.parent == null or
-                    (objects.client == null and objects.layer_surface == null))
-                    return;
-
-                const parent = @as(?*wlr.SceneTree, @ptrFromInt(surface.role_data.popup.?.parent.?.data)) orelse
-                    if (objects.client) |client|
-                    client.popup_surface
-                else if (objects.layer_surface) |layer_surface|
-                    layer_surface.scene_tree
-                else
-                    unreachable;
-
-                const new_surface = try parent.createSceneXdgSurface(surface);
-                surface.surface.data = @intFromPtr(new_surface);
-                new_surface.node.raiseToTop();
-
-                if ((objects.client != null and objects.client.?.monitor == null) or
-                    (objects.layer_surface != null and objects.layer_surface.?.monitor == null))
-                    return;
-
-                var box = if (objects.client) |client|
-                    client.monitor.?.window
-                else if (objects.layer_surface) |layer_surface|
-                    layer_surface.monitor.?.mode
-                else
-                    unreachable;
-
-                box.x -= if (objects.client) |client|
-                    client.getInnerBounds().x
-                else if (objects.layer_surface) |layer_surface|
-                    layer_surface.bounds.x
-                else
-                    unreachable;
-                box.y -= if (objects.client) |client|
-                    client.getInnerBounds().y
-                else if (objects.layer_surface) |layer_surface|
-                    layer_surface.bounds.y
-                else
-                    unreachable;
-
-                surface.role_data.popup.?.unconstrainFromBox(&box);
-
-                return;
-            } else if (surface.role == .none)
-                return;
-
-            const client = try allocator.create(Client);
-            surface.data = @intFromPtr(client);
-
-            client.* = .{ .surface = target, .session = session, .managed = true };
-
-            std.log.info("add xdg surface {*} to {*}", .{ target.XDG, client });
-
-            const toplevel = surface.role_data.toplevel orelse @panic("toplevel null");
-
-            _ = toplevel.setWmCapabilities(.{ .fullscreen = true });
-
-            surface.surface.events.commit.add(&client.events.commit_event);
-            surface.surface.events.map.add(&client.events.map_event);
-            surface.surface.events.unmap.add(&client.events.unmap_event);
-            surface.surface.events.destroy.add(&client.events.deinit_event);
-
-            toplevel.events.set_title.add(&client.events.set_title_event);
-            toplevel.events.request_fullscreen.add(&client.events.fullscreen_event);
-
-            std.log.info("created client", .{});
-
-            return;
-        },
-        .X11 => |surface| {
-            const client = try allocator.create(Client);
-            surface.data = @intFromPtr(client);
-
-            client.* = .{ .surface = target, .session = session, .managed = !surface.override_redirect };
-
-            std.log.info("add x11 surface {*} to {*}", .{ target.X11, client });
-
-            // used for reference when comparing to xcb names
-            // https://github.com/swaywm/wlroots/blob/0855cdacb2eeeff35849e2e9c4db0aa996d78d10/include/wlr/xwayland.h#L143
-
-            surface.events.associate.add(&client.events.xevents.associate_event);
-            surface.events.dissociate.add(&client.events.xevents.dissociate_event);
-            surface.events.request_activate.add(&client.events.xevents.activate_event);
-            surface.events.request_configure.add(&client.events.xevents.configure_event);
-            surface.events.set_hints.add(&client.events.xevents.set_hints_event);
-            surface.events.set_title.add(&client.events.set_title_event);
-            surface.events.destroy.add(&client.events.xevents.deinit_event);
-            surface.events.request_fullscreen.add(&client.events.fullscreen_event);
-
-            std.log.info("created x11 client", .{});
-        },
-    }
-}
-
 fn associate(self: *Client) !void {
     self.getSurface().events.map.add(&self.events.map_event);
     self.getSurface().events.unmap.add(&self.events.unmap_event);
@@ -670,7 +948,7 @@ fn dissociate(self: *Client) !void {
 fn setHints(self: *Client) !void {
     // const surface = self.getSurface();
     const monitor = self.monitor orelse return;
-    if (self == monitor.focusedClient())
+    if (self == monitor.getFocusedClient())
         return;
 
     // self.setUrgent()
@@ -744,37 +1022,16 @@ fn map(self: *Client) !void {
         m.dirty.layout = true;
 
     self.dirty = .{};
-    try self.cleanDirty();
+    try self.update();
 }
 
-pub fn applyRules(self: *Client) !void {
+fn applyRules(self: *Client) !void {
     self.setBorder(0);
     self.setFloating(true);
     try self.session.config.applyRules(self);
 }
 
-pub fn getAppId(self: *Client) [:0]const u8 {
-    switch (self.surface) {
-        .XDG => |surface| return std.mem.span(surface.role_data.toplevel.?.app_id) orelse "No appid",
-        .X11 => |surface| return std.mem.span(surface.class) orelse return "No appid",
-    }
-}
-
-pub fn getTitle(self: *Client) [:0]const u8 {
-    switch (self.surface) {
-        .XDG => |surface| return std.mem.span(surface.role_data.toplevel.?.title) orelse "No title",
-        .X11 => |surface| return std.mem.span(surface.title) orelse "No title",
-    }
-}
-
-pub fn getLabel(self: *Client) [:0]const u8 {
-    if (self.label) |label|
-        return label;
-
-    return self.getTitle();
-}
-
-pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
+fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     var result = bounds;
 
     const title_height = self.session.config.getTitleHeight();
@@ -893,137 +1150,7 @@ pub fn applyBounds(self: *Client, bounds: wlr.Box, base: bool) wlr.Box {
     return result;
 }
 
-pub fn raiseToTop(self: *Client) void {
-    self.dirty.top = true;
-}
-
-pub fn setVisible(self: *Client, visible: bool) void {
-    if (visible == self.visible)
-        return;
-
-    self.visible = visible;
-    self.dirty.visible = true;
-}
-
-pub fn setFloatingSize(self: *Client, in_target_bounds: wlr.Box) void {
-    self.floating_bounds = self.applyBounds(in_target_bounds, false);
-    if (self.floating)
-        self.dirty.size = true;
-}
-
-pub fn setContainerSize(self: *Client, in_target_bounds: wlr.Box) void {
-    self.container_bounds = self.applyBounds(in_target_bounds, false);
-    if (!self.floating)
-        self.dirty.size = true;
-}
-
-pub inline fn setContainer(self: *Client, container: u8) void {
-    if (self.container == container)
-        return;
-
-    self.container = container;
-
-    self.dirty.container = true;
-
-    std.log.info("set container: {}", .{self.container});
-
-    if (!self.floating) {
-        var iter = self.session.clients.iterator(.forward);
-        while (iter.next()) |client| {
-            if (self.sharesTabs(client))
-                client.dirty.title = true;
-        }
-
-        if (self.monitor) |m|
-            m.dirty.layout = true;
-    }
-}
-
-pub inline fn setContainerTitle(self: *Client, title: bool) void {
-    if (self.container_title == title)
-        return;
-
-    self.container_title = title;
-    self.dirty.frame = true;
-}
-
-pub inline fn setBorder(self: *Client, border: i32) void {
-    if (self.border == border)
-        return;
-
-    self.border = border;
-    self.dirty.frame = true;
-}
-
-pub inline fn setIcon(self: *Client, icon: ?[:0]const u8) void {
-    if (self.icon) |old_icon|
-        allocator.free(old_icon);
-
-    if (icon) |new_icon|
-        self.icon = allocator.dupeZ(u8, new_icon) catch null
-    else
-        self.icon = null;
-
-    self.dirty.title = true;
-}
-
-pub inline fn setLabel(self: *Client, label: ?[:0]const u8) void {
-    if (self.label) |old_label|
-        allocator.free(old_label);
-
-    if (label) |new_label|
-        self.label = allocator.dupeZ(u8, new_label) catch null
-    else
-        self.label = null;
-
-    self.dirty.title = true;
-}
-
-pub inline fn setTag(self: *Client, tag: u8) void {
-    if (self.tag == tag)
-        return;
-
-    self.tag = tag;
-
-    if (self.monitor) |m|
-        m.dirty.layout = true;
-}
-
-pub inline fn setFullscreen(self: *Client, fullscreen: bool) void {
-    if (self.fullscreen == fullscreen)
-        return;
-
-    self.fullscreen = fullscreen;
-    self.dirty.fullscreen = true;
-    self.dirty.frame = true;
-    self.dirty.size = true;
-
-    if (self.monitor) |m|
-        m.dirty.layout = true;
-}
-
-pub inline fn setFloating(self: *Client, floating: bool) void {
-    if (self.floating == floating)
-        return;
-
-    // cant unfloat a window im moving
-    if (self.session.input.cursor_mode != .normal and
-        self.session.input.cursor_mode != .pressed and
-        self.floating == true)
-        return;
-
-    self.floating = floating;
-    self.dirty.floating = true;
-    self.dirty.frame = true;
-
-    if (self.monitor) |m|
-        m.dirty.layout = true;
-
-    if (!self.frame.is_init)
-        return;
-}
-
-pub fn updateSizeSerial(self: *Client) ?u32 {
+fn updateSizeSerial(self: *Client) ?u32 {
     const bounds = self.getBounds();
     const inner_bounds = self.getInnerBounds();
 
@@ -1054,12 +1181,12 @@ pub fn updateSizeSerial(self: *Client) ?u32 {
     return self.surface.XDG.role_data.toplevel.?.setSize(inner.width, inner.height);
 }
 
-pub fn commit(self: *Client) !void {
+fn commit(self: *Client) !void {
     if (self.resize_serial != null and self.resize_serial.? <= self.surface.XDG.current.configure_serial)
         self.resize_serial = null;
 }
 
-pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !void {
+fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !void {
     if (self.monitor == null)
         return;
 
@@ -1074,7 +1201,7 @@ pub fn configure(self: *Client, event: *wlr.XwaylandSurface.event.Configure) !vo
         m.dirty.layout = true;
 }
 
-pub fn activate(self: *Client) !void {
+fn activate(self: *Client) !void {
     if (self.surface != .X11)
         return;
 
@@ -1084,7 +1211,7 @@ pub fn activate(self: *Client) !void {
     self.surface.X11.activate(true);
 }
 
-pub fn unmap(self: *Client) !void {
+fn unmap(self: *Client) !void {
     if (self == self.session.input.grab_client)
         _ = try self.session.input.endDrag();
 
@@ -1130,7 +1257,7 @@ pub fn unmap(self: *Client) !void {
     self.setLabel(null);
 }
 
-pub fn deinit(self: *Client) void {
+fn deinit(self: *Client) void {
     self.events.set_title_event.link.remove();
     self.events.fullscreen_event.link.remove();
 
@@ -1152,131 +1279,4 @@ pub fn deinit(self: *Client) void {
     }
 
     allocator.destroy(self);
-}
-
-pub fn getSurface(self: *Client) *wlr.Surface {
-    return switch (self.surface) {
-        .X11 => |surface| surface.surface.?,
-        .XDG => |surface| surface.surface,
-    };
-}
-
-pub fn isMapped(self: *Client) bool {
-    return switch (self.surface) {
-        .X11 => |surface| surface.surface.?.mapped,
-        .XDG => |surface| surface.surface.mapped,
-    };
-}
-
-pub fn isStopped(self: *Client) bool {
-    return switch (self.surface) {
-        .X11 => false,
-        .XDG => {
-            // std.log.warn("TODO: check client stopped", .{});
-            return false;
-        },
-    };
-}
-
-pub fn notifyEnter(self: *Client, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
-    if (kb) |keyb| {
-        seat.keyboardNotifyEnter(self.getSurface(), &keyb.keycodes, &keyb.modifiers);
-    } else {
-        seat.keyboardNotifyEnter(self.getSurface(), &.{}, null);
-    }
-}
-
-pub fn activateSurface(self: *Client, active: bool) void {
-    if (self.active == active)
-        return;
-
-    self.active = active;
-
-    self.dirty.title = true;
-    self.dirty.frame = true;
-
-    switch (self.surface) {
-        .X11 => |surface| surface.activate(active),
-        .XDG => |surface| _ = surface.role_data.toplevel.?.setActivated(active),
-    }
-}
-
-pub fn close(self: *Client) void {
-    switch (self.surface) {
-        .X11 => |surface| surface.close(),
-        .XDG => |surface| surface.role_data.toplevel.?.sendClose(),
-    }
-}
-
-pub fn setMonitor(self: *Client, target_monitor: *Monitor) void {
-    const old_monitor = self.monitor;
-
-    if (old_monitor == target_monitor)
-        return;
-
-    self.monitor = target_monitor;
-
-    if (old_monitor) |old| {
-        self.getSurface().sendLeave(old.output);
-
-        old.dirty.layout = true;
-
-        self.setFloatingSize(.{
-            .x = self.floating_bounds.x - old.mode.x + target_monitor.mode.x,
-            .y = self.floating_bounds.y - old.mode.y + target_monitor.mode.y,
-            .width = self.floating_bounds.width,
-            .height = self.floating_bounds.height,
-        });
-    } else {
-        self.setFloatingSize(.{
-            .x = self.floating_bounds.x + target_monitor.mode.x,
-            .y = self.floating_bounds.y + target_monitor.mode.y,
-            .width = self.floating_bounds.width,
-            .height = self.floating_bounds.height,
-        });
-    }
-
-    self.getSurface().sendEnter(target_monitor.output);
-
-    self.setTag(target_monitor.tag);
-
-    self.setFullscreen(self.fullscreen);
-
-    target_monitor.dirty.layout = true;
-}
-
-pub fn getFrameKind(self: *Client) FrameKind {
-    if (!self.managed or !self.frame.is_init)
-        return .hide;
-
-    if (self.fullscreen)
-        return .hide;
-
-    if (self.floating)
-        return .title;
-
-    if (self.container_title)
-        return .title;
-
-    if (self.border == 0)
-        return .hide;
-
-    return .border;
-}
-
-pub fn clearMonitor(self: *Client) !void {
-    const old_monitor = self.monitor;
-
-    if (old_monitor == null)
-        return;
-
-    self.monitor = null;
-
-    if (old_monitor) |old| {
-        self.getSurface().sendLeave(old.output);
-
-        old.dirty.layout = true;
-    }
-
-    try self.session.focusClient(self, true);
 }

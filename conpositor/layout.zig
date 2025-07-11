@@ -11,7 +11,7 @@ const Lua = zlua.Lua;
 const Layout = @This();
 
 pub const Container = struct {
-    pub const Size = struct {
+    const Size = struct {
         x_min: f64,
         y_min: f64,
         x_max: f64,
@@ -64,7 +64,18 @@ pub const Container = struct {
         return false;
     }
 
-    pub fn childrenUsed(
+    pub fn deinit(self: *Container) void {
+        const old = self.children;
+        self.children = &.{};
+
+        for (old) |*child| {
+            child.*.deinit();
+        }
+        allocator.free(old);
+        allocator.destroy(self);
+    }
+
+    fn childrenUsed(
         self: *const Container,
         usage: *const [256]bool,
     ) usize {
@@ -83,7 +94,7 @@ pub const Container = struct {
         return result;
     }
 
-    pub fn used(
+    fn used(
         self: *const Container,
         usage: *const [256]bool,
     ) usize {
@@ -101,7 +112,7 @@ pub const Container = struct {
         return result;
     }
 
-    pub fn getSize(
+    fn getSize(
         self: *const Container,
         idx: u8,
         usage: *const [256]bool,
@@ -133,17 +144,6 @@ pub const Container = struct {
             // TODO: is this the best choice?
             unreachable;
         }
-    }
-
-    pub fn deinit(self: *Container) void {
-        const old = self.children;
-        self.children = &.{};
-
-        for (old) |*child| {
-            child.*.deinit();
-        }
-        allocator.free(old);
-        allocator.destroy(self);
     }
 };
 

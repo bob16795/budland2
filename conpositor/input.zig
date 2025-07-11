@@ -23,19 +23,117 @@ const CursorMode = enum {
     lua,
 };
 
-const InputEvents = struct {
-    cursor_motion_event: wl.Listener(*wlr.Pointer.event.Motion) = .init(Listeners.cursor_motion),
-    cursor_motion_absolute_event: wl.Listener(*wlr.Pointer.event.MotionAbsolute) = .init(Listeners.cursor_motion_absolute),
-    cursor_button_event: wl.Listener(*wlr.Pointer.event.Button) = .init(Listeners.cursor_button),
-    cursor_axis_event: wl.Listener(*wlr.Pointer.event.Axis) = .init(Listeners.cursor_axis),
-    cursor_frame_event: wl.Listener(*wlr.Cursor) = .init(Listeners.cursor_frame),
+const MotionError = error{
+    TODO,
+} || Config.ConfigError || cairo.Error;
 
-    request_set_cursor_event: wl.Listener(*wlr.Seat.event.RequestSetCursor) = .init(Listeners.request_set_cursor),
-    set_cursor_shape_event: wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape) = .init(Listeners.set_cursor_shape),
-    request_set_primary_selection: wl.Listener(*wlr.Seat.event.RequestSetPrimarySelection) = .init(Listeners.set_psel),
-    request_set_selection: wl.Listener(*wlr.Seat.event.RequestSetSelection) = .init(Listeners.set_sel),
+const xkb_rules: xkb.RuleNames = .{
+    .options = null,
+    .rules = null,
+    .model = null,
+    .layout = null,
+    .variant = null,
+};
 
-    new_input_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.new_input),
+const Events = struct {
+    cursor_motion_event: wl.Listener(*wlr.Pointer.event.Motion) = .init(Events.cursorMotion),
+    cursor_motion_absolute_event: wl.Listener(*wlr.Pointer.event.MotionAbsolute) = .init(Events.cursorMotionAbsolute),
+    cursor_button_event: wl.Listener(*wlr.Pointer.event.Button) = .init(Events.cursorButton),
+    cursor_axis_event: wl.Listener(*wlr.Pointer.event.Axis) = .init(Events.cursorAxis),
+    cursor_frame_event: wl.Listener(*wlr.Cursor) = .init(Events.cursorFrame),
+
+    request_set_cursor_event: wl.Listener(*wlr.Seat.event.RequestSetCursor) = .init(Events.requestSetCursor),
+    set_cursor_shape_event: wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape) = .init(Events.setCursorShape),
+    request_set_primary_selection: wl.Listener(*wlr.Seat.event.RequestSetPrimarySelection) = .init(Events.setPrimarySelection),
+    request_set_selection: wl.Listener(*wlr.Seat.event.RequestSetSelection) = .init(Events.setSelection),
+
+    new_input_event: wl.Listener(*wlr.InputDevice) = .init(Events.newInput),
+
+    fn cursorMotion(listener: *wl.Listener(*wlr.Pointer.event.Motion), motion: *wlr.Pointer.event.Motion) void {
+        const events: *Events = @fieldParentPtr("cursor_motion_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.cursorMotion(motion) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn cursorMotionAbsolute(listener: *wl.Listener(*wlr.Pointer.event.MotionAbsolute), motion: *wlr.Pointer.event.MotionAbsolute) void {
+        const events: *Events = @fieldParentPtr("cursor_motion_absolute_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.cursorMotionAbsolute(motion) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn cursorButton(listener: *wl.Listener(*wlr.Pointer.event.Button), button: *wlr.Pointer.event.Button) void {
+        const events: *Events = @fieldParentPtr("cursor_button_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.cursorButton(button) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn cursorAxis(listener: *wl.Listener(*wlr.Pointer.event.Axis), axis: *wlr.Pointer.event.Axis) void {
+        const events: *Events = @fieldParentPtr("cursor_axis_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.cursorAxis(axis) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn cursorFrame(listener: *wl.Listener(*wlr.Cursor), _: *wlr.Cursor) void {
+        const events: *Events = @fieldParentPtr("cursor_frame_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.cursorFrame() catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn newInput(listener: *wl.Listener(*wlr.InputDevice), device: *wlr.InputDevice) void {
+        const events: *Events = @fieldParentPtr("new_input_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.newInput(device) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn setCursorShape(listener: *wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape), event: *wlr.CursorShapeManagerV1.event.RequestSetShape) void {
+        const events: *Events = @fieldParentPtr("set_cursor_shape_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.setCursorShape(event) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
+
+    fn setSelection(listener: *wl.Listener(*wlr.Seat.event.RequestSetSelection), event: *wlr.Seat.event.RequestSetSelection) void {
+        const events: *Events = @fieldParentPtr("request_set_selection", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.seat.setSelection(event.source, event.serial);
+    }
+
+    fn setPrimarySelection(listener: *wl.Listener(*wlr.Seat.event.RequestSetPrimarySelection), event: *wlr.Seat.event.RequestSetPrimarySelection) void {
+        const events: *Events = @fieldParentPtr("request_set_primary_selection", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.seat.setPrimarySelection(event.source, event.serial);
+    }
+
+    fn requestSetCursor(listener: *wl.Listener(*wlr.Seat.event.RequestSetCursor), event: *wlr.Seat.event.RequestSetCursor) void {
+        const events: *Events = @fieldParentPtr("request_set_cursor_event", listener);
+        const self: *Input = @fieldParentPtr("events", events);
+
+        self.requestSetCursor(event) catch |ex| {
+            @panic(@errorName(ex));
+        };
+    }
 };
 
 fn cleanMask(mask: wlr.Keyboard.ModifierMask) wlr.Keyboard.ModifierMask {
@@ -52,13 +150,72 @@ const Keyboard = struct {
     key_repeat_source: *wl.EventSource = undefined,
     keysyms: []const xkb.Keysym = &.{},
     modifier_mask: wlr.Keyboard.ModifierMask = .{},
+    events: Keyboard.Events = .{},
     link: wl.list.Link = undefined,
 
-    key_event: wl.Listener(*wlr.Keyboard.event.Key) = .init(Listeners.keyboard.key),
-    modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Listeners.keyboard.modifiers),
-    destroy_event: wl.Listener(*wlr.InputDevice) = .init(Listeners.keyboard.destroy),
+    const Events = struct {
+        key_event: wl.Listener(*wlr.Keyboard.event.Key) = .init(Keyboard.Events.key),
+        modifiers_event: wl.Listener(*wlr.Keyboard) = .init(Keyboard.Events.modifiers),
+        destroy_event: wl.Listener(*wlr.InputDevice) = .init(Keyboard.Events.destroy),
 
-    pub fn handleKey(session: *Session, xkb_state: *xkb.State, mods: wlr.Keyboard.ModifierMask, keycode: xkb.Keycode, comptime shifted: bool) !bool {
+        fn key(listener: *wl.Listener(*wlr.Keyboard.event.Key), key_data: *wlr.Keyboard.event.Key) void {
+            const events: *Keyboard.Events = @fieldParentPtr("key_event", listener);
+            const self: *Keyboard = @fieldParentPtr("events", events);
+
+            self.key(key_data) catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
+
+        fn modifiers(listener: *wl.Listener(*wlr.Keyboard), _: *wlr.Keyboard) void {
+            const events: *Keyboard.Events = @fieldParentPtr("modifiers_event", listener);
+            const self: *Keyboard = @fieldParentPtr("events", events);
+
+            self.modifiers() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
+
+        fn destroy(listener: *wl.Listener(*wlr.InputDevice), _: *wlr.InputDevice) void {
+            const events: *Keyboard.Events = @fieldParentPtr("destroy_event", listener);
+            const self: *Keyboard = @fieldParentPtr("events", events);
+
+            self.deinit() catch |ex| {
+                @panic(@errorName(ex));
+            };
+        }
+    };
+
+    pub fn init(input: *Input, device: *wlr.InputDevice) !*Keyboard {
+        const wlr_keyboard = device.toKeyboard();
+
+        const keyboard = try allocator.create(Keyboard);
+        errdefer allocator.destroy(keyboard);
+
+        keyboard.* = .{ .session = input.session, .keyboard = wlr_keyboard };
+
+        const context = xkb.Context.new(.no_flags) orelse return error.XkbInitFailed;
+        defer context.unref();
+
+        const keymap = xkb.Keymap.newFromNames(context, &xkb_rules, .no_flags) orelse return error.XkbInitFailed;
+        defer keymap.unref();
+
+        _ = keyboard.keyboard.setKeymap(keymap);
+
+        keyboard.keyboard.setRepeatInfo(REPEAT_RATE, REPEAT_DELAY);
+
+        keyboard.keyboard.events.key.add(&keyboard.events.key_event);
+        keyboard.keyboard.events.modifiers.add(&keyboard.events.modifiers_event);
+        keyboard.keyboard.base.events.destroy.add(&keyboard.events.destroy_event);
+
+        input.seat.setKeyboard(keyboard.keyboard);
+
+        keyboard.key_repeat_source = try input.session.server.getEventLoop().addTimer(*Keyboard, keyRepeat, keyboard);
+
+        return keyboard;
+    }
+
+    fn handleKey(session: *Session, xkb_state: *xkb.State, mods: wlr.Keyboard.ModifierMask, keycode: xkb.Keycode, comptime shifted: bool) !bool {
         const keymap = xkb_state.getKeymap();
         const layout_index = xkb_state.keyGetLayout(keycode);
 
@@ -102,7 +259,7 @@ const Keyboard = struct {
         return false;
     }
 
-    pub fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
+    fn key(self: *Keyboard, key_data: *wlr.Keyboard.event.Key) !void {
         const keycode = key_data.keycode + 8;
 
         const modifier_mask = self.keyboard.getModifiers();
@@ -134,134 +291,21 @@ const Keyboard = struct {
         self.session.input.seat.keyboardNotifyKey(key_data.time_msec, key_data.keycode, key_data.state);
     }
 
-    pub fn modifiers(self: *Keyboard) !void {
+    fn modifiers(self: *Keyboard) !void {
         self.session.input.seat.setKeyboard(self.keyboard);
         self.session.input.seat.keyboardNotifyModifiers(&self.keyboard.modifiers);
     }
 
-    pub fn deinit(self: *Keyboard) !void {
+    fn deinit(self: *Keyboard) !void {
         self.key_repeat_source.remove();
         self.link.remove();
-        self.key_event.link.remove();
-        self.modifiers_event.link.remove();
-        self.destroy_event.link.remove();
+
+        self.events.key_event.link.remove();
+        self.events.modifiers_event.link.remove();
+        self.events.destroy_event.link.remove();
 
         allocator.destroy(self);
     }
-};
-
-const Listeners = struct {
-    pub fn cursor_motion(listener: *wl.Listener(*wlr.Pointer.event.Motion), motion: *wlr.Pointer.event.Motion) void {
-        const events: *InputEvents = @fieldParentPtr("cursor_motion_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.cursor_motion(motion) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn cursor_motion_absolute(listener: *wl.Listener(*wlr.Pointer.event.MotionAbsolute), motion: *wlr.Pointer.event.MotionAbsolute) void {
-        const events: *InputEvents = @fieldParentPtr("cursor_motion_absolute_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.cursor_motion_absolute(motion) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn cursor_button(listener: *wl.Listener(*wlr.Pointer.event.Button), button: *wlr.Pointer.event.Button) void {
-        const events: *InputEvents = @fieldParentPtr("cursor_button_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.cursor_button(button) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn cursor_axis(listener: *wl.Listener(*wlr.Pointer.event.Axis), axis: *wlr.Pointer.event.Axis) void {
-        const events: *InputEvents = @fieldParentPtr("cursor_axis_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.cursor_axis(axis) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn cursor_frame(listener: *wl.Listener(*wlr.Cursor), _: *wlr.Cursor) void {
-        const events: *InputEvents = @fieldParentPtr("cursor_frame_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.cursor_frame() catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn new_input(listener: *wl.Listener(*wlr.InputDevice), device: *wlr.InputDevice) void {
-        const events: *InputEvents = @fieldParentPtr("new_input_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.new_input(device) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn set_cursor_shape(listener: *wl.Listener(*wlr.CursorShapeManagerV1.event.RequestSetShape), event: *wlr.CursorShapeManagerV1.event.RequestSetShape) void {
-        const events: *InputEvents = @fieldParentPtr("set_cursor_shape_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.set_cursor_shape(event) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub fn set_sel(listener: *wl.Listener(*wlr.Seat.event.RequestSetSelection), event: *wlr.Seat.event.RequestSetSelection) void {
-        const events: *InputEvents = @fieldParentPtr("request_set_selection", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.seat.setSelection(event.source, event.serial);
-    }
-
-    pub fn set_psel(listener: *wl.Listener(*wlr.Seat.event.RequestSetPrimarySelection), event: *wlr.Seat.event.RequestSetPrimarySelection) void {
-        const events: *InputEvents = @fieldParentPtr("request_set_primary_selection", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.seat.setPrimarySelection(event.source, event.serial);
-    }
-
-    pub fn request_set_cursor(listener: *wl.Listener(*wlr.Seat.event.RequestSetCursor), event: *wlr.Seat.event.RequestSetCursor) void {
-        const events: *InputEvents = @fieldParentPtr("request_set_cursor_event", listener);
-        const self: *Input = @fieldParentPtr("events", events);
-
-        self.request_set_cursor(event) catch |ex| {
-            @panic(@errorName(ex));
-        };
-    }
-
-    pub const keyboard = struct {
-        pub fn key(listener: *wl.Listener(*wlr.Keyboard.event.Key), key_data: *wlr.Keyboard.event.Key) void {
-            const self: *Keyboard = @fieldParentPtr("key_event", listener);
-
-            self.key(key_data) catch |ex| {
-                @panic(@errorName(ex));
-            };
-        }
-
-        pub fn modifiers(listener: *wl.Listener(*wlr.Keyboard), _: *wlr.Keyboard) void {
-            const self: *Keyboard = @fieldParentPtr("modifiers_event", listener);
-
-            self.modifiers() catch |ex| {
-                @panic(@errorName(ex));
-            };
-        }
-
-        pub fn destroy(listener: *wl.Listener(*wlr.InputDevice), _: *wlr.InputDevice) void {
-            const self: *Keyboard = @fieldParentPtr("destroy_event", listener);
-
-            self.deinit() catch |ex| {
-                @panic(@errorName(ex));
-            };
-        }
-    };
 };
 
 session: *Session,
@@ -273,7 +317,7 @@ xcursor_image: ?[*:0]const u8 = null,
 cursor_shape_manager: *wlr.CursorShapeManagerV1,
 xcursor_manager: *wlr.XcursorManager,
 seat: *wlr.Seat,
-events: InputEvents,
+events: Events,
 
 keyboards: wl.list.Head(Keyboard, .link) = undefined,
 locked: bool = false,
@@ -318,7 +362,7 @@ pub fn init(self: *Input, session: *Session) !void {
     self.keyboards.init();
 }
 
-pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
+pub fn xwaylandReady(self: *Input, xwayland: *wlr.Xwayland) void {
     xwayland.setSeat(self.seat);
 
     self.xcursor_image = "default";
@@ -333,21 +377,6 @@ pub fn xwayland_ready(self: *Input, xwayland: *wlr.Xwayland) void {
         );
     }
 }
-
-pub fn cursor_motion(self: *Input, motion: *wlr.Pointer.event.Motion) !void {
-    self.cursor.move(motion.device, motion.delta_x, motion.delta_y);
-    try self.motionNotify(motion.time_msec);
-}
-
-pub fn cursor_motion_absolute(self: *Input, motion: *wlr.Pointer.event.MotionAbsolute) !void {
-    self.cursor.warpAbsolute(motion.device, motion.x, motion.y);
-
-    try self.motionNotify(@intCast(motion.time_msec));
-}
-
-const MotionError = error{
-    TODO,
-} || Config.ConfigError || cairo.Error;
 
 pub fn motionNotify(
     self: *Input,
@@ -399,7 +428,37 @@ pub fn motionNotify(
     try self.pointerFocus(objects.client, objects.surface, time);
 }
 
-pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surface, time: usize) !void {
+pub fn endDrag(self: *Input) !bool {
+    if (self.cursor_mode == .lua and try self.session.config.sendEvent(i32, .mouse_release, 0)) {
+        self.cursor_mode = .normal;
+
+        if (self.xcursor_image) |xcursor_image|
+            self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
+
+        try self.motionNotify(0);
+
+        self.grab_client = null;
+
+        return true;
+    }
+
+    self.cursor_mode = .normal;
+
+    return false;
+}
+
+fn cursorMotion(self: *Input, motion: *wlr.Pointer.event.Motion) !void {
+    self.cursor.move(motion.device, motion.delta_x, motion.delta_y);
+    try self.motionNotify(motion.time_msec);
+}
+
+fn cursorMotionAbsolute(self: *Input, motion: *wlr.Pointer.event.MotionAbsolute) !void {
+    self.cursor.warpAbsolute(motion.device, motion.x, motion.y);
+
+    try self.motionNotify(@intCast(motion.time_msec));
+}
+
+fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surface, time: usize) !void {
     const internal_call = time == 0;
     var atime: usize = time;
 
@@ -436,7 +495,7 @@ pub fn pointerFocus(self: *Input, target_client: ?*Client, surface: ?*wlr.Surfac
     }
 }
 
-pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
+fn cursorButton(self: *Input, button: *wlr.Pointer.event.Button) !void {
     self.session.idle_notifier.notifyActivity(self.seat);
 
     switch (button.state) {
@@ -469,35 +528,16 @@ pub fn cursor_button(self: *Input, button: *wlr.Pointer.event.Button) !void {
     _ = self.seat.pointerNotifyButton(button.time_msec, button.button, button.state);
 }
 
-pub fn endDrag(self: *Input) !bool {
-    if (self.cursor_mode == .lua and try self.session.config.sendEvent(i32, .mouse_release, 0)) {
-        self.cursor_mode = .normal;
-
-        if (self.xcursor_image) |xcursor_image|
-            self.cursor.setXcursor(self.xcursor_manager, xcursor_image);
-
-        try self.motionNotify(0);
-
-        self.grab_client = null;
-
-        return true;
-    }
-
-    self.cursor_mode = .normal;
-
-    return false;
-}
-
-pub fn cursor_axis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
+fn cursorAxis(self: *Input, axis: *wlr.Pointer.event.Axis) !void {
     self.session.idle_notifier.notifyActivity(self.seat);
     self.seat.pointerNotifyAxis(axis.time_msec, axis.orientation, axis.delta, axis.delta_discrete, axis.source, axis.relative_direction);
 }
 
-pub fn cursor_frame(self: *Input) !void {
+fn cursorFrame(self: *Input) !void {
     self.seat.pointerNotifyFrame();
 }
 
-pub fn set_cursor_shape(self: *Input, event: *wlr.CursorShapeManagerV1.event.RequestSetShape) !void {
+fn setCursorShape(self: *Input, event: *wlr.CursorShapeManagerV1.event.RequestSetShape) !void {
     if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
         return;
 
@@ -507,7 +547,7 @@ pub fn set_cursor_shape(self: *Input, event: *wlr.CursorShapeManagerV1.event.Req
     }
 }
 
-pub fn request_set_cursor(self: *Input, event: *wlr.Seat.event.RequestSetCursor) !void {
+fn requestSetCursor(self: *Input, event: *wlr.Seat.event.RequestSetCursor) !void {
     if (self.cursor_mode != .normal and self.cursor_mode != .pressed)
         return;
 
@@ -517,15 +557,7 @@ pub fn request_set_cursor(self: *Input, event: *wlr.Seat.event.RequestSetCursor)
     }
 }
 
-const xkb_rules: xkb.RuleNames = .{
-    .options = null,
-    .rules = null,
-    .model = null,
-    .layout = null,
-    .variant = null,
-};
-
-pub fn keyrepeat(keyboard: *Keyboard) c_int {
+fn keyRepeat(keyboard: *Keyboard) c_int {
     if (keyboard.keysyms.len == 0 or keyboard.keyboard.repeat_info.rate <= 0)
         return 0;
 
@@ -534,33 +566,10 @@ pub fn keyrepeat(keyboard: *Keyboard) c_int {
     return 0;
 }
 
-pub fn new_input(self: *Input, device: *wlr.InputDevice) !void {
+fn newInput(self: *Input, device: *wlr.InputDevice) !void {
     switch (device.type) {
         .keyboard => {
-            const wlr_keyboard = device.toKeyboard();
-
-            const keyboard = try allocator.create(Keyboard);
-            keyboard.* = .{ .session = self.session, .keyboard = wlr_keyboard };
-
-            const context = xkb.Context.new(.no_flags) orelse return error.XkbInitFailed;
-            defer context.unref();
-
-            const keymap = xkb.Keymap.newFromNames(context, &xkb_rules, .no_flags) orelse return error.XkbInitFailed;
-            defer keymap.unref();
-
-            _ = keyboard.keyboard.setKeymap(keymap);
-
-            keyboard.keyboard.setRepeatInfo(REPEAT_RATE, REPEAT_DELAY);
-
-            keyboard.keyboard.events.key.add(&keyboard.key_event);
-            keyboard.keyboard.events.modifiers.add(&keyboard.modifiers_event);
-            keyboard.keyboard.base.events.destroy.add(&keyboard.destroy_event);
-
-            self.seat.setKeyboard(keyboard.keyboard);
-
-            keyboard.key_repeat_source = try self.session.server.getEventLoop().addTimer(*Keyboard, keyrepeat, keyboard);
-
-            self.keyboards.append(keyboard);
+            self.keyboards.append(try .init(self, device));
         },
         .pointer => {
             if (device.isLibinput()) {

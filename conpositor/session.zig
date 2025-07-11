@@ -81,19 +81,133 @@ focus_clients: wl.list.Head(Client, .focus_link) = undefined,
 exclusive_focus: ?*wlr.Surface = null,
 
 focusedMonitor: ?*Monitor = null,
+events: Events = .{},
 
-layout_change_event: wl.Listener(*wlr.OutputLayout) = .init(Listeners.layoutChange),
-xwayland_ready_event: wl.Listener(void) = .init(Listeners.xwayland_ready),
+const Events = struct {
+    layout_change_event: wl.Listener(*wlr.OutputLayout) = .init(Events.layoutChange),
+    xwayland_ready_event: wl.Listener(void) = .init(Events.xwayland_ready),
 
-new_output_event: wl.Listener(*wlr.Output) = .init(Listeners.newOutput),
-new_layer_surface_event: wl.Listener(*wlr.LayerSurfaceV1) = .init(Listeners.new_layer_surface),
-new_xdg_toplevel_event: wl.Listener(*wlr.XdgToplevel) = .init(Listeners.new_xdg_toplevel),
-new_xdg_popup_event: wl.Listener(*wlr.XdgPopup) = .init(Listeners.new_xdg_popup),
-new_xdg_surface_event: wl.Listener(*wlr.XdgSurface) = .init(Listeners.new_xdg_surface),
-new_xwayland_surface_event: wl.Listener(*wlr.XwaylandSurface) = .init(Listeners.new_xwayland_surface),
-new_toplevel_decoration_event: wl.Listener(*wlr.XdgToplevelDecorationV1) = .init(Listeners.new_toplevel_decoration),
-output_manager_apply_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerApply),
-output_manager_test_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Listeners.outputManagerTest),
+    new_output_event: wl.Listener(*wlr.Output) = .init(Events.newOutput),
+    new_layer_surface_event: wl.Listener(*wlr.LayerSurfaceV1) = .init(Events.new_layer_surface),
+    new_xdg_toplevel_event: wl.Listener(*wlr.XdgToplevel) = .init(Events.new_xdg_toplevel),
+    new_xdg_popup_event: wl.Listener(*wlr.XdgPopup) = .init(Events.new_xdg_popup),
+    new_xdg_surface_event: wl.Listener(*wlr.XdgSurface) = .init(Events.new_xdg_surface),
+    new_xwayland_surface_event: wl.Listener(*wlr.XwaylandSurface) = .init(Events.new_xwayland_surface),
+    new_toplevel_decoration_event: wl.Listener(*wlr.XdgToplevelDecorationV1) = .init(Events.new_toplevel_decoration),
+    output_manager_apply_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Events.outputManagerApply),
+    output_manager_test_event: wl.Listener(*wlr.OutputConfigurationV1) = .init(Events.outputManagerTest),
+
+    fn newOutput(listener: *wl.Listener(*wlr.Output), wlr_output: *wlr.Output) void {
+        const events: *Session.Events = @fieldParentPtr("new_output_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        if (!wlr_output.initRender(self.wlr_allocator, self.renderer)) return;
+
+        Monitor.init(self, wlr_output) catch {
+            std.log.err("failed to allocate new monitor", .{});
+            wlr_output.destroy();
+            return;
+        };
+
+        self.updateMons() catch |err| {
+            std.log.err("failed to update monitors {s}", .{@errorName(err)});
+        };
+    }
+
+    fn outputManagerTest(listener: *wl.Listener(*wlr.OutputConfigurationV1), output_configuration: *wlr.OutputConfigurationV1) void {
+        const events: *Session.Events = @fieldParentPtr("output_manager_test_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        self.outputManagerApply(true, output_configuration) catch |err| {
+            std.log.err("failed to update monitors {s}", .{@errorName(err)});
+        };
+    }
+
+    fn outputManagerApply(listener: *wl.Listener(*wlr.OutputConfigurationV1), output_configuration: *wlr.OutputConfigurationV1) void {
+        const events: *Session.Events = @fieldParentPtr("output_manager_apply_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        self.outputManagerApply(false, output_configuration) catch |err| {
+            std.log.err("failed to update monitors {s}", .{@errorName(err)});
+        };
+    }
+
+    fn xwayland_ready(listener: *wl.Listener(void)) void {
+        const events: *Session.Events = @fieldParentPtr("xwayland_ready_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        self.xwayland_ready(self.xwayland.?) catch |err| {
+            std.log.err("failed to init server xwayland {}", .{err});
+        };
+        self.input.xwaylandReady(self.xwayland.?);
+    }
+
+    fn new_toplevel_decoration(listener: *wl.Listener(*wlr.XdgToplevelDecorationV1), decoration: *wlr.XdgToplevelDecorationV1) void {
+        _ = listener;
+
+        _ = decoration.setMode(.server_side);
+    }
+
+    fn new_layer_surface(listener: *wl.Listener(*wlr.LayerSurfaceV1), xdg_layer_surface: *wlr.LayerSurfaceV1) void {
+        const events: *Session.Events = @fieldParentPtr("new_layer_surface_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        self.newLayerSurfaceClient(xdg_layer_surface) catch |err| {
+            std.log.err("failed to init layer surface {}", .{err});
+        };
+    }
+
+    fn new_xdg_popup(listener: *wl.Listener(*wlr.XdgPopup), xdg_surface: *wlr.XdgPopup) void {
+        const events: *Session.Events = @fieldParentPtr("new_xdg_popup_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        std.log.info("{*} {}", .{ xdg_surface.base, xdg_surface.base.role });
+
+        self.newClient(.{ .XDG = xdg_surface.base }) catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
+    fn new_xdg_toplevel(listener: *wl.Listener(*wlr.XdgToplevel), xdg_surface: *wlr.XdgToplevel) void {
+        const events: *Session.Events = @fieldParentPtr("new_xdg_toplevel_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        std.log.info("{*} {}", .{ xdg_surface.base, xdg_surface.base.role });
+
+        self.newClient(.{ .XDG = xdg_surface.base }) catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
+    fn new_xdg_surface(listener: *wl.Listener(*wlr.XdgSurface), xdg_surface: *wlr.XdgSurface) void {
+        const events: *Session.Events = @fieldParentPtr("new_xdg_surface_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        std.log.info("{*} {}", .{ xdg_surface, xdg_surface.role });
+
+        self.newClient(.{ .XDG = xdg_surface }) catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
+    fn new_xwayland_surface(listener: *wl.Listener(*wlr.XwaylandSurface), xwayland_surface: *wlr.XwaylandSurface) void {
+        const events: *Session.Events = @fieldParentPtr("new_xwayland_surface_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        self.newClient(.{ .X11 = xwayland_surface }) catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+
+    fn layoutChange(listener: *wl.Listener(*wlr.OutputLayout), _: *wlr.OutputLayout) void {
+        const events: *Session.Events = @fieldParentPtr("layout_change_event", listener);
+        const self: *Session = @fieldParentPtr("events", events);
+
+        self.updateMons() catch |err| {
+            std.log.err("failed to init client {}", .{err});
+        };
+    }
+};
 
 const STACKING_ORDER = [_]Layer{
     .LyrBg,
@@ -113,108 +227,6 @@ const FOCUS_ORDER = blk: {
     var tmp = STACKING_ORDER;
     std.mem.reverse(Layer, &tmp);
     break :blk tmp;
-};
-
-const Listeners = struct {
-    pub fn newOutput(listener: *wl.Listener(*wlr.Output), wlr_output: *wlr.Output) void {
-        const self: *Session = @fieldParentPtr("new_output_event", listener);
-        if (!wlr_output.initRender(self.wlr_allocator, self.renderer)) return;
-
-        Monitor.create(self, wlr_output) catch {
-            std.log.err("failed to allocate new monitor", .{});
-            wlr_output.destroy();
-            return;
-        };
-
-        self.updateMons() catch |err| {
-            std.log.err("failed to update monitors {s}", .{@errorName(err)});
-        };
-    }
-
-    pub fn outputManagerTest(listener: *wl.Listener(*wlr.OutputConfigurationV1), output_configuration: *wlr.OutputConfigurationV1) void {
-        const self: *Session = @fieldParentPtr("output_manager_test_event", listener);
-
-        self.outputManagerApply(true, output_configuration) catch |err| {
-            std.log.err("failed to update monitors {s}", .{@errorName(err)});
-        };
-    }
-
-    pub fn outputManagerApply(listener: *wl.Listener(*wlr.OutputConfigurationV1), output_configuration: *wlr.OutputConfigurationV1) void {
-        const self: *Session = @fieldParentPtr("output_manager_apply_event", listener);
-
-        self.outputManagerApply(false, output_configuration) catch |err| {
-            std.log.err("failed to update monitors {s}", .{@errorName(err)});
-        };
-    }
-
-    pub fn xwayland_ready(listener: *wl.Listener(void)) void {
-        const self: *Session = @fieldParentPtr("xwayland_ready_event", listener);
-
-        self.xwayland_ready(self.xwayland.?) catch |err| {
-            std.log.err("failed to init server xwayland {}", .{err});
-        };
-        self.input.xwayland_ready(self.xwayland.?);
-    }
-
-    pub fn new_toplevel_decoration(listener: *wl.Listener(*wlr.XdgToplevelDecorationV1), decoration: *wlr.XdgToplevelDecorationV1) void {
-        _ = listener;
-
-        _ = decoration.setMode(.server_side);
-    }
-
-    pub fn new_layer_surface(listener: *wl.Listener(*wlr.LayerSurfaceV1), xdg_layer_surface: *wlr.LayerSurfaceV1) void {
-        const self: *Session = @fieldParentPtr("new_layer_surface_event", listener);
-
-        self.newLayerSurfaceClient(xdg_layer_surface) catch |err| {
-            std.log.err("failed to init layer surface {}", .{err});
-        };
-    }
-
-    pub fn new_xdg_popup(listener: *wl.Listener(*wlr.XdgPopup), xdg_surface: *wlr.XdgPopup) void {
-        const self: *Session = @fieldParentPtr("new_xdg_popup_event", listener);
-
-        std.log.info("{*} {}", .{ xdg_surface.base, xdg_surface.base.role });
-
-        self.newClient(.{ .XDG = xdg_surface.base }) catch |err| {
-            std.log.err("failed to init client {}", .{err});
-        };
-    }
-
-    pub fn new_xdg_toplevel(listener: *wl.Listener(*wlr.XdgToplevel), xdg_surface: *wlr.XdgToplevel) void {
-        const self: *Session = @fieldParentPtr("new_xdg_toplevel_event", listener);
-
-        std.log.info("{*} {}", .{ xdg_surface.base, xdg_surface.base.role });
-
-        self.newClient(.{ .XDG = xdg_surface.base }) catch |err| {
-            std.log.err("failed to init client {}", .{err});
-        };
-    }
-
-    pub fn new_xdg_surface(listener: *wl.Listener(*wlr.XdgSurface), xdg_surface: *wlr.XdgSurface) void {
-        const self: *Session = @fieldParentPtr("new_xdg_surface_event", listener);
-
-        std.log.info("{*} {}", .{ xdg_surface, xdg_surface.role });
-
-        self.newClient(.{ .XDG = xdg_surface }) catch |err| {
-            std.log.err("failed to init client {}", .{err});
-        };
-    }
-
-    pub fn new_xwayland_surface(listener: *wl.Listener(*wlr.XwaylandSurface), xwayland_surface: *wlr.XwaylandSurface) void {
-        const self: *Session = @fieldParentPtr("new_xwayland_surface_event", listener);
-
-        self.newClient(.{ .X11 = xwayland_surface }) catch |err| {
-            std.log.err("failed to init client {}", .{err});
-        };
-    }
-
-    pub fn layoutChange(listener: *wl.Listener(*wlr.OutputLayout), _: *wlr.OutputLayout) void {
-        const self: *Session = @fieldParentPtr("layout_change_event", listener);
-
-        self.updateMons() catch |err| {
-            std.log.err("failed to init client {}", .{err});
-        };
-    }
 };
 
 pub fn deinit(self: *Session) void {
@@ -295,7 +307,7 @@ fn outputManagerApply(self: *Session, is_test: bool, output_configuration: *wlr.
 fn newLayerSurfaceClient(self: *Session, surface: *wlr.LayerSurfaceV1) !void {
     std.log.info("new layer surface {*}", .{surface});
 
-    try LayerSurface.create(self, surface);
+    try LayerSurface.init(self, surface);
 }
 
 fn newClient(self: *Session, surface: Client.ClientSurface) !void {
@@ -523,23 +535,23 @@ pub fn attachEvents(self: *Session) SessionError!void {
 
     _ = try wl.Global.create(self.server, conpositor.IpcManagerV1, 1, *Session, self, IpcOutput.managerBind);
 
-    self.output_layout.events.change.add(&self.layout_change_event);
+    self.output_layout.events.change.add(&self.events.layout_change_event);
 
-    self.backend.events.new_output.add(&self.new_output_event);
+    self.backend.events.new_output.add(&self.events.new_output_event);
 
-    self.xdg_shell.events.new_toplevel.add(&self.new_xdg_toplevel_event);
-    self.xdg_shell.events.new_surface.add(&self.new_xdg_surface_event);
-    self.xdg_shell.events.new_popup.add(&self.new_xdg_popup_event);
+    self.xdg_shell.events.new_toplevel.add(&self.events.new_xdg_toplevel_event);
+    self.xdg_shell.events.new_surface.add(&self.events.new_xdg_surface_event);
+    self.xdg_shell.events.new_popup.add(&self.events.new_xdg_popup_event);
 
-    self.layer_shell.events.new_surface.add(&self.new_layer_surface_event);
+    self.layer_shell.events.new_surface.add(&self.events.new_layer_surface_event);
 
-    self.xdg_decoration_manager.events.new_toplevel_decoration.add(&self.new_toplevel_decoration_event);
+    self.xdg_decoration_manager.events.new_toplevel_decoration.add(&self.events.new_toplevel_decoration_event);
 
-    self.xwayland.?.events.new_surface.add(&self.new_xwayland_surface_event);
-    self.xwayland.?.events.ready.add(&self.xwayland_ready_event);
+    self.xwayland.?.events.new_surface.add(&self.events.new_xwayland_surface_event);
+    self.xwayland.?.events.ready.add(&self.events.xwayland_ready_event);
 
-    self.output_manager.events.apply.add(&self.output_manager_apply_event);
-    self.output_manager.events.@"test".add(&self.output_manager_test_event);
+    self.output_manager.events.apply.add(&self.events.output_manager_apply_event);
+    self.output_manager.events.@"test".add(&self.events.output_manager_test_event);
 }
 
 pub fn launch(self: *Session) SessionError!void {
@@ -642,7 +654,7 @@ pub fn updateMons(self: *Session) !void {
                 }
             }
 
-            if (selected.focusedClient()) |client|
+            if (selected.getFocusedClient()) |client|
                 try self.focusClient(client, false)
             else
                 self.focusClear();
@@ -655,7 +667,7 @@ pub fn updateMons(self: *Session) !void {
 pub fn focusedClient(self: *Session) ?*Client {
     const selected = self.focusedMonitor orelse return null;
 
-    return selected.focusedClient();
+    return selected.getFocusedClient();
 }
 
 pub fn getSurfaceObjects(self: *Session, surface: *wlr.Surface) ObjectData {
@@ -818,7 +830,7 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
             while (iter.next()) |client| {
                 if (&client.link == &self.clients.link)
                     continue;
-                if (selmon.clientVisible(client) and
+                if (selmon.isClientVisible(client) and
                     client.container == sel.container and
                     !client.floating)
                     break :blk client;
@@ -832,7 +844,7 @@ pub fn focusStack(self: *Session, dir: CycleDir) !void {
             while (iter.next()) |client| {
                 if (&client.link == &self.clients.link)
                     continue;
-                if (selmon.clientVisible(client) and
+                if (selmon.isClientVisible(client) and
                     client.container == sel.container and
                     !client.floating)
                     break :blk client;

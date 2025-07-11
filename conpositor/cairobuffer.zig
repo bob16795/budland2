@@ -3,7 +3,11 @@ const pixman = @import("pixman");
 const wlr = @import("wlroots");
 const std = @import("std");
 
+const Config = @import("config.zig");
+
 const CairoBuffer = @This();
+
+const allocator = Config.allocator;
 
 base: wlr.Buffer,
 
@@ -12,15 +16,14 @@ unscaled_height: u16,
 scale: f32,
 surface: cairo.Surface,
 context: cairo.Context,
-allocator: std.mem.Allocator,
 
 const Impl = struct {
-    pub fn destroy(wlr_buffer: *wlr.Buffer) callconv(.C) void {
+    fn destroy(wlr_buffer: *wlr.Buffer) callconv(.C) void {
         const self: *CairoBuffer = @fieldParentPtr("base", wlr_buffer);
         self.destroy();
     }
 
-    pub fn beginDataPtrAccess(wlr_buffer: *wlr.Buffer, _: u32, data: *?*anyopaque, format: *u32, stride: *usize) callconv(.C) bool {
+    fn beginDataPtrAccess(wlr_buffer: *wlr.Buffer, _: u32, data: *?*anyopaque, format: *u32, stride: *usize) callconv(.C) bool {
         const self: *CairoBuffer = @fieldParentPtr("base", wlr_buffer);
 
         data.* = self.surface.getData() catch return false;
@@ -30,13 +33,13 @@ const Impl = struct {
         return true;
     }
 
-    pub fn endDataPtrAccess(wlr_buffer: *wlr.Buffer) callconv(.C) void {
+    fn endDataPtrAccess(wlr_buffer: *wlr.Buffer) callconv(.C) void {
         const self: *CairoBuffer = @fieldParentPtr("base", wlr_buffer);
 
         _ = self;
     }
 
-    const VTable: wlr.Buffer.Impl = .{
+    pub const VTable: wlr.Buffer.Impl = .{
         .destroy = Impl.destroy,
         .get_dmabuf = null,
         .get_shm = null,
@@ -45,7 +48,7 @@ const Impl = struct {
     };
 };
 
-pub fn create(allocator: std.mem.Allocator, width: u16, height: u16, scale: f32) !*CairoBuffer {
+pub fn init(width: u16, height: u16, scale: f32) !*CairoBuffer {
     const scaled_width: u16 = @intFromFloat(scale * @as(f32, @floatFromInt(width)));
     const scaled_height: u16 = @intFromFloat(scale * @as(f32, @floatFromInt(height)));
 
@@ -59,7 +62,6 @@ pub fn create(allocator: std.mem.Allocator, width: u16, height: u16, scale: f32)
         .surface = surface,
         .base = undefined,
         .context = try cairo.Context.create(&result.surface),
-        .allocator = allocator,
     };
     result.context.scale(@floatCast(scale), @floatCast(scale));
 
@@ -80,7 +82,7 @@ pub fn destroy(self: *CairoBuffer) void {
     self.context.destroy();
     self.surface.destroy();
 
-    self.allocator.destroy(self);
+    allocator.destroy(self);
 }
 
 pub fn resize(self: *CairoBuffer, width: u16, height: u16, scale: f32) !*CairoBuffer {

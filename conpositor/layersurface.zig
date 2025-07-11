@@ -10,18 +10,11 @@ const LayerSurface = @This();
 
 const allocator = Config.allocator;
 
-const LayerSurfaceEvents = struct {
-    map_event: wl.Listener(void) = .init(Listeners.map),
-    unmap_event: wl.Listener(void) = .init(Listeners.unmap),
-    commit_event: wl.Listener(*wlr.Surface) = .init(Listeners.commit),
-    deinit_event: wl.Listener(*wlr.Surface) = .init(Listeners.deinit),
-};
-
 surface_id: u8 = 25,
 
 session: *Session,
 monitor: ?*Monitor,
-events: LayerSurfaceEvents = .{},
+events: Events = .{},
 
 surface: *wlr.LayerSurfaceV1,
 scene: *wlr.SceneLayerSurfaceV1,
@@ -31,9 +24,14 @@ mapped: bool,
 link: wl.list.Link = undefined,
 bounds: wlr.Box = std.mem.zeroes(wlr.Box),
 
-const Listeners = struct {
-    pub fn map(listener: *wl.Listener(void)) void {
-        const events: *LayerSurfaceEvents = @fieldParentPtr("map_event", listener);
+const Events = struct {
+    map_event: wl.Listener(void) = .init(Events.map),
+    unmap_event: wl.Listener(void) = .init(Events.unmap),
+    commit_event: wl.Listener(*wlr.Surface) = .init(Events.commit),
+    deinit_event: wl.Listener(*wlr.Surface) = .init(Events.deinit),
+
+    fn map(listener: *wl.Listener(void)) void {
+        const events: *LayerSurface.Events = @fieldParentPtr("map_event", listener);
         const surface: *LayerSurface = @fieldParentPtr("events", events);
 
         surface.map() catch |ex| {
@@ -41,8 +39,8 @@ const Listeners = struct {
         };
     }
 
-    pub fn commit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
-        const events: *LayerSurfaceEvents = @fieldParentPtr("commit_event", listener);
+    fn commit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
+        const events: *LayerSurface.Events = @fieldParentPtr("commit_event", listener);
         const surface: *LayerSurface = @fieldParentPtr("events", events);
 
         surface.commit() catch |ex| {
@@ -50,8 +48,8 @@ const Listeners = struct {
         };
     }
 
-    pub fn unmap(listener: *wl.Listener(void)) void {
-        const events: *LayerSurfaceEvents = @fieldParentPtr("unmap_event", listener);
+    fn unmap(listener: *wl.Listener(void)) void {
+        const events: *LayerSurface.Events = @fieldParentPtr("unmap_event", listener);
         const surface: *LayerSurface = @fieldParentPtr("events", events);
 
         surface.unmap() catch |ex| {
@@ -59,15 +57,15 @@ const Listeners = struct {
         };
     }
 
-    pub fn deinit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
-        const events: *LayerSurfaceEvents = @fieldParentPtr("deinit_event", listener);
+    fn deinit(listener: *wl.Listener(*wlr.Surface), _: *wlr.Surface) void {
+        const events: *LayerSurface.Events = @fieldParentPtr("deinit_event", listener);
         const surface: *LayerSurface = @fieldParentPtr("events", events);
 
         surface.deinit();
     }
 };
 
-pub fn create(session: *Session, surf: *wlr.LayerSurfaceV1) !void {
+pub fn init(session: *Session, surf: *wlr.LayerSurfaceV1) !void {
     const monitor: *Monitor = if (surf.output) |output|
         @as(*Monitor, @ptrFromInt(output.data))
     else
@@ -113,11 +111,19 @@ pub fn create(session: *Session, surf: *wlr.LayerSurfaceV1) !void {
     std.log.info("tracking surface {*} as {*}", .{ surf, result });
 }
 
-pub fn map(self: *LayerSurface) !void {
+pub fn notifyEnter(self: *LayerSurface, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
+    if (kb) |keyb| {
+        seat.keyboardNotifyEnter(self.surface.surface, &keyb.keycodes, &keyb.modifiers);
+    } else {
+        seat.keyboardNotifyEnter(self.surface.surface, &.{}, null);
+    }
+}
+
+fn map(self: *LayerSurface) !void {
     try self.session.input.motionNotify(0);
 }
 
-pub fn commit(self: *LayerSurface) !void {
+fn commit(self: *LayerSurface) !void {
     if (self.surface.output) |output| {
         self.monitor = @ptrFromInt(output.data);
     } else return;
@@ -144,15 +150,7 @@ pub fn commit(self: *LayerSurface) !void {
         try m.arrangeLayers();
 }
 
-pub fn notifyEnter(self: *LayerSurface, seat: *wlr.Seat, kb: ?*wlr.Keyboard) void {
-    if (kb) |keyb| {
-        seat.keyboardNotifyEnter(self.surface.surface, &keyb.keycodes, &keyb.modifiers);
-    } else {
-        seat.keyboardNotifyEnter(self.surface.surface, &.{}, null);
-    }
-}
-
-pub fn unmap(self: *LayerSurface) !void {
+fn unmap(self: *LayerSurface) !void {
     self.mapped = false;
     self.scene_tree.node.setEnabled(false);
 
@@ -166,7 +164,7 @@ pub fn unmap(self: *LayerSurface) !void {
     try self.session.input.motionNotify(0);
 }
 
-pub fn deinit(self: *LayerSurface) void {
+fn deinit(self: *LayerSurface) void {
     std.log.info("deinit {*}", .{self});
 
     self.link.remove();
